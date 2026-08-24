@@ -571,12 +571,15 @@ def draw_text_block(frame, lines, viz_cfg) -> None:
 
 def parse_args(argv=None):
     parser = argparse.ArgumentParser(
-        description="Star Navigation v1 - build stage 1, detection only"
+        description="Star Navigation v1 - detection and pose from ceiling markers"
     )
     parser.add_argument("--hall", default="config/hall.json", type=Path,
-                        help="runtime config: source, camera, detector, viz")
-    parser.add_argument("--markers", default="config/markers.json", type=Path,
-                        help="marker map: tag size, ceiling height, marker world positions")
+                        help="runtime config: source, markers path, camera, detector, viz")
+    parser.add_argument("--markers", default=None, type=Path,
+                        help="marker map: tag size, ceiling height, marker world positions. "
+                             "Defaults to hall.json's 'markers' key, so switching between "
+                             "the screen rig and the real ceiling is a config edit rather "
+                             "than a flag on every command.")
     parser.add_argument("--source", default=None,
                         help="override hall.json source: webcam index, video path, "
                              "stream URL, or image folder")
@@ -591,7 +594,8 @@ def parse_args(argv=None):
 def main(argv=None) -> int:
     args = parse_args(argv)
     hall = load_json(args.hall)
-    marker_map = load_marker_map(args.markers)
+    markers_path = args.markers or Path(hall.get("markers", "config/markers.json"))
+    marker_map = load_marker_map(markers_path)
     viz_cfg = hall["viz"]
     playback_cfg = hall["playback"]
 
