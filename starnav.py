@@ -10,7 +10,10 @@ BUILD STAGES 1-3 OF 5.
        opens, the dictionary matches the printed tags, and the IDs overhead
        match the IDs in the map. Every pose bug is cheaper to find after this.
     2. Single-marker pose, with the handedness of the image-corner to
-       world-point mapping resolved empirically by tools/eval_photos.py.
+       world-point mapping resolved empirically - by tools/eval_photos.py on
+       multi-marker photos, or by tools/eval_shift.py from a fixed camera.
+       Pointing --source at a folder of stills prints one X/Y/Z row per photo,
+       which is the readout the sign check is made from.
     3. Multi-marker fused solve - all visible markers' corners into one
        solvePnP.
     Stages 4 (hall map window, per-frame CSV) and 5 (quality metrics in the
@@ -134,6 +137,11 @@ class FrameSource:
     def __init__(self, spec, camera_cfg: dict):
         self.spec = str(spec)
         self.kind = "unknown"
+        # Stills are a measurement set - a handful of deliberate photographs -
+        # so each one's pose is printed as a table row. A live feed or a video
+        # would flood the terminal and its record is the window, not stdout.
+        self.is_stills = False
+        self.frame_name = ""
         self.is_live = False
         self._capture = None
         self._image_paths = []
@@ -221,6 +229,7 @@ class FrameSource:
             raise RuntimeError(
                 f"no images in '{folder}' (looked for {IMAGE_EXTENSIONS})"
             )
+        self.is_stills = True
         self.kind = f"image folder '{folder}' ({len(self._image_paths)} frames)"
 
     # -- common ------------------------------------------------------------
@@ -233,7 +242,9 @@ class FrameSource:
 
         if self._image_index >= len(self._image_paths):
             return None
-        frame = cv2.imread(str(self._image_paths[self._image_index]))
+        path = self._image_paths[self._image_index]
+        self.frame_name = path.name
+        frame = cv2.imread(str(path))
         self._image_index += 1
         return frame
 
@@ -631,6 +642,12 @@ def main(argv=None) -> int:
     print(f"tag size    : {marker_map['tag_size_m']} m at "
           f"{marker_map['ceiling_height_m']} m ceiling")
     print("keys        : q/ESC quit, space pause, s snapshot")
+    if source.is_stills:
+        # Copy-pasteable straight into the report. Z is here alongside X and Y
+        # because it is the free scale check: the marker map pins the plane at
+        # a known Z, so the solved camera Z is a direct readout of range error.
+        print(f"\n{'photo':<24}{'x_m':>9}{'y_m':>9}{'z_m':>9}"
+              f"{'yaw':>7}{'n':>3}{'reproj':>8}{'acc_mm':>8}")
 
     frame = None
     frame_index = 0
@@ -659,6 +676,7 @@ def main(argv=None) -> int:
                     f"mapped   {len(known)}: {[i for i, _ in known]}",
                     f"unmapped {len(unknown)}: {[i for i, _ in unknown]}",
                 ]
+                pose = None
                 if camera_matrix is not None:
                     pose = pose_from_detections(known, marker_map, camera_matrix,
                                                 dist_coeffs, offsets)
@@ -674,6 +692,16 @@ def main(argv=None) -> int:
                 else:
                     lines.append("no calib.npz: detection only, no pose")
                 draw_text_block(frame, lines, viz_cfg)
+
+                if source.is_stills:
+                    name = source.frame_name[:23]
+                    if pose is None:
+                        print(f"{name:<24}{'no pose':>9}")
+                    else:
+                        print(f"{name:<24}{pose['x']:>9.4f}{pose['y']:>9.4f}"
+                              f"{pose['z']:>9.4f}{pose['yaw_deg']:>7.1f}"
+                              f"{pose['n_markers']:>3}{pose['reproj_px']:>8.3f}"
+                              f"{pose['acc_est_m'] * 1000:>8.2f}")
 
                 cv2.imshow(viz_cfg["camera_window"], frame)
                 frame_index += 1

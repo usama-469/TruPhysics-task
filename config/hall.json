@@ -1,0 +1,58 @@
+{
+  "source": "0",
+  "markers": "config/markers_screen.json",
+  "camera": {
+    "backend": "auto",
+    "frame_width": 1280,
+    "frame_height": 720,
+    "autofocus": 0,
+    "focus": 0,
+    "auto_exposure": 0.25,
+    "exposure": -6
+  },
+  "detection": {
+    "dictionary": "DICT_4X4_50",
+    "corner_refinement": "subpix",
+    "corner_refine_win_size": 5,
+    "corner_refine_max_iterations": 30,
+    "corner_refine_min_accuracy": 0.05
+  },
+  "viz": {
+    "camera_window": "starnav - camera",
+    "fps_window_frames": 30,
+    "known_color_bgr": [
+      0,
+      255,
+      0
+    ],
+    "unknown_color_bgr": [
+      0,
+      0,
+      255
+    ],
+    "text_color_bgr": [
+      255,
+      255,
+      255
+    ],
+    "text_shadow_bgr": [
+      0,
+      0,
+      0
+    ],
+    "font_scale": 0.55,
+    "text_line_height_px": 22,
+    "text_origin_px": [
+      10,
+      26
+    ]
+  },
+  "playback": {
+    "wait_ms": 1,
+    "loop_video": false
+  },
+  "output": {
+    "csv_path": "logs/track.csv",
+    "snapshot_dir": "logs/snapshots"
+  }
+}
