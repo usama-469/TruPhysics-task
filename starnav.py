@@ -43,8 +43,10 @@ Usage:
 from __future__ import annotations
 
 import argparse
+import csv
 import json
 import math
+import socket
 import time
 from collections import deque
 from pathlib import Path
@@ -446,8 +448,90 @@ def solve_single(marker_id: int, corners, marker_map: dict,
     return rvec_world, translation_world_to_camera
 
 
+def solve_level(object_points, image_points, camera_matrix, dist_coeffs):
+    """4-DOF pose for a camera whose optical axis is normal to the marker plane.
+
+    When the mount guarantees no tilt, the only remaining freedoms are the two
+    lateral offsets, the range, and the rotation about the optical axis. The
+    world-to-image map is then a pure SIMILARITY - scale, in-plane rotation,
+    translation - rather than a homography:
+
+        [u - cx]         [ cos t   sin t ] [X - Cx]
+        [v - cy] = (f/d) [-sin t   cos t ] [Y - Cy]
+
+    which is linear in (a, b, tx, ty) = (s cos t, s sin t, ...) and solvable in
+    closed form. That is the whole point. A general solvePnP would spend three
+    rotational degrees of freedom estimating a tilt that is known to be zero,
+    and a fronto-parallel square is precisely where SOLVEPNP_IPPE_SQUARE is
+    degenerate - so on a level rig the unconstrained solver is at its WORST
+    exactly where this one is at its best.
+
+    Distortion has to be removed first: it is the one part of the imaging model
+    that is not a similarity, so leaving it in would be absorbed into the fit as
+    a wrong scale and a wrong centre.
+
+    The fit is overdetermined even for a single marker - four corners are eight
+    equations against four unknowns - so the residual still carries information.
+    A tilted square images as a trapezoid, which no similarity can reproduce, so
+    reproj_px becomes a TILT DETECTOR here rather than merely a fit statistic.
+    Its sensitivity falls with range: at 0.75 m a 1 degree tilt perturbs a 0.2 m
+    tag's image by over a pixel, but at 12 m a 0.24 degree tilt moves a 0.72 m
+    tag by ~0.06 px, which is under the noise floor. Close in it will catch a
+    bad mount; at ceiling height it will not, and levelling has to be verified
+    mechanically.
+    """
+    # Every marker lies on one plane, so a single Z serves for the whole solve.
+    plane_z = float(object_points[0, 2])
+    focal_px = float((camera_matrix[0, 0] + camera_matrix[1, 1]) / 2.0)
+
+    ideal = cv2.undistortPoints(image_points.reshape(-1, 1, 2), camera_matrix,
+                                dist_coeffs, P=camera_matrix).reshape(-1, 2)
+    u = ideal[:, 0] - camera_matrix[0, 2]
+    v = ideal[:, 1] - camera_matrix[1, 2]
+    world_x, world_y = object_points[:, 0], object_points[:, 1]
+
+    # u =  a*X + b*Y + tx
+    # v = -b*X + a*Y + ty
+    rows = len(world_x)
+    design = np.zeros((2 * rows, 4), dtype=np.float64)
+    rhs = np.empty(2 * rows, dtype=np.float64)
+    design[0::2, 0] = world_x
+    design[0::2, 1] = world_y
+    design[0::2, 2] = 1.0
+    rhs[0::2] = u
+    design[1::2, 0] = world_y
+    design[1::2, 1] = -world_x
+    design[1::2, 3] = 1.0
+    rhs[1::2] = v
+
+    solution, *_ = np.linalg.lstsq(design, rhs, rcond=None)
+    a, b, tx, ty = solution
+    scale = math.hypot(a, b)
+    if scale <= 1e-9:
+        return None, None
+
+    angle = math.atan2(b, a)
+    rotation_2d = np.array([[math.cos(angle), math.sin(angle)],
+                            [-math.sin(angle), math.cos(angle)]])
+    # scale = focal / distance-to-plane, so the range falls straight out of it.
+    distance = focal_px / scale
+    centre_xy = -np.linalg.inv(rotation_2d) @ np.array([tx, ty]) / scale
+
+    # Rebuild the world->camera pair the rest of the pipeline expects, so the
+    # inversion, the yaw and the reprojection error are computed by exactly the
+    # same code as the unconstrained path - including projecting through the
+    # FULL model, which is what lets the residual reveal a violated assumption.
+    rotation = np.array([[math.cos(angle), math.sin(angle), 0.0],
+                         [-math.sin(angle), math.cos(angle), 0.0],
+                         [0.0, 0.0, 1.0]])
+    camera_in_world = np.array([centre_xy[0], centre_xy[1], plane_z - distance])
+    rvec, _ = cv2.Rodrigues(rotation)
+    tvec = (-rotation @ camera_in_world).reshape(3, 1)
+    return rvec, tvec
+
+
 def pose_from_detections(detections, marker_map: dict, camera_matrix, dist_coeffs,
-                         offsets: np.ndarray):
+                         offsets: np.ndarray, assume_level: bool = False):
     """Camera pose in world coordinates, or None if nothing usable is visible."""
     if not detections:
         return None
@@ -456,7 +540,13 @@ def pose_from_detections(detections, marker_map: dict, camera_matrix, dist_coeff
         detections, marker_map, offsets)
 
     single = len(used_ids) == 1
-    if single:
+    if assume_level:
+        # SCALED-DEMO: valid only while the mount holds the optical axis normal
+        # to the marker plane. On real hardware this is a mechanical promise,
+        # not a software one - see solve_level for how far reproj_px can be
+        # trusted to police it.
+        rvec, tvec = solve_level(object_points, image_points, camera_matrix, dist_coeffs)
+    elif single:
         marker_id, corners = detections[0]
         rvec, tvec = solve_single(marker_id, corners, marker_map,
                                   camera_matrix, dist_coeffs)
@@ -478,6 +568,13 @@ def pose_from_detections(detections, marker_map: dict, camera_matrix, dist_coeff
     image_up_in_world = rotation.T @ np.array([0.0, -1.0, 0.0])
     yaw_deg = float(np.degrees(np.arctan2(image_up_in_world[1], image_up_in_world[0])))
 
+    # Angle between the optical axis and the marker plane's normal. This is the
+    # term that dominates at height - 1 degree at 12 m is about 21 cm laterally -
+    # so it is reported per frame rather than assumed. It also says whether
+    # pose.assume_level is honest for a given rig: the 4-DOF solve costs
+    # range * tan(this), and a handheld capture is never near zero.
+    tilt_deg = float(np.degrees(np.arccos(min(1.0, abs(float(rotation[2, 2]))))))
+
     error_px = reprojection_error(object_points, image_points, rvec, tvec,
                                   camera_matrix, dist_coeffs)
     range_m = abs(marker_map["ceiling_height_m"] - camera_in_world[2])
@@ -492,6 +589,8 @@ def pose_from_detections(detections, marker_map: dict, camera_matrix, dist_coeff
         "reproj_px": error_px,
         "range_m": range_m,
         "single_marker": single,
+        "level_assumed": assume_level,
+        "tilt_deg": tilt_deg,
         "acc_est_m": accuracy_estimate(error_px, len(used_ids), range_m, camera_matrix),
         "rvec": rvec,
         "tvec": tvec,
@@ -576,6 +675,221 @@ def draw_text_block(frame, lines, viz_cfg) -> None:
                     tuple(viz_cfg["text_color_bgr"]), 1, cv2.LINE_AA)
 
 
+# Hall map  (build stage 4)
+# --------------------------------------------------------------------------
+
+class HallMap:
+    """Top-down 2D view of the marker plane and the camera's track across it.
+
+    Deliberately plain OpenCV drawing; the spec says polish is not required.
+    The map earns its place because it makes a wrong pose obvious at a glance -
+    a mirrored X, a tag mapped to the wrong grid cell, a jump the moment a
+    marker leaves view - none of which are visible in a scrolling column of
+    numbers.
+
+    The extent is derived from the marker map rather than configured. The tags
+    *are* the surveyed area, so a hand-entered hall rectangle would be a second
+    copy of the same fact, free to drift out of agreement with the first.
+    """
+
+    def __init__(self, marker_map: dict, viz_cfg: dict):
+        xs = [x for x, _ in marker_map["markers"].values()]
+        ys = [y for _, y in marker_map["markers"].values()]
+        self.bounds = (min(xs), min(ys), max(xs), max(ys))
+        self.tag_size = marker_map["tag_size_m"]
+        self.markers = marker_map["markers"]
+
+        self.cfg = viz_cfg
+        self.trail = deque(maxlen=viz_cfg["map_trail_len"])
+
+        # Canvas size is fixed once, from the aspect of the surveyed area, so
+        # the window never resizes mid-run. The margin is deliberately not in
+        # here: it scales both axes equally and would cancel. max(..., tag_size)
+        # keeps a single-marker or single-row map from collapsing to zero.
+        span_x = max(self.bounds[2] - self.bounds[0], self.tag_size)
+        span_y = max(self.bounds[3] - self.bounds[1], self.tag_size)
+        longest = max(span_x, span_y)
+        self.width_px = max(1, round(viz_cfg["map_size_px"] * span_x / longest))
+        self.height_px = max(1, round(viz_cfg["map_size_px"] * span_y / longest))
+
+        self._fit()
+
+    def _view(self):
+        """The world rectangle to draw: marker extent, widened by the trail.
+
+        The camera is not guaranteed to be inside the tags - on the screen rig
+        it sits well outside them - and a map that silently clips the dot it
+        exists to show is worse than no map.
+
+        Widening by the *trail* rather than by every pose ever seen is what
+        keeps this stable. A single ill-conditioned single-marker frame can
+        place the camera metres away; grow-only would let that one outlier zoom
+        the map out permanently, whereas here it drops out of view once it ages
+        past the trail length and the scale recovers on its own.
+        """
+        min_x, min_y, max_x, max_y = self.bounds
+        for x, y in self.trail:
+            min_x, min_y = min(min_x, x), min(min_y, y)
+            max_x, max_y = max(max_x, x), max(max_y, y)
+        return min_x, min_y, max_x, max_y
+
+    def _fit(self) -> None:
+        """Recompute scale and origin so the view fits the fixed canvas.
+
+        One scale for both axes, so a metre reads the same length horizontally
+        and vertically and a non-square area is drawn undistorted. Whatever
+        room is left over on the other axis becomes centring slack.
+        """
+        min_x, min_y, max_x, max_y = self._view()
+        span_x = max(max_x - min_x, self.tag_size)
+        span_y = max(max_y - min_y, self.tag_size)
+        margin = max(span_x, span_y) * self.cfg["map_margin_frac"]
+        self.scale = min(self.width_px / (span_x + 2 * margin),
+                         self.height_px / (span_y + 2 * margin))
+        self.origin = (min_x - (self.width_px / self.scale - span_x) / 2.0,
+                       min_y - (self.height_px / self.scale - span_y) / 2.0)
+
+    def to_px(self, x: float, y: float):
+        """World metres -> map pixels.
+
+        World +Y is "forward" and is drawn up the image, but image rows
+        increase downward, hence the subtraction rather than a second scale.
+        Dropping that flip mirrors the map vertically and reads exactly like a
+        sign error in the solver, which is the wrong place to go looking.
+        """
+        return (int(round((x - self.origin[0]) * self.scale)),
+                int(round(self.height_px - (y - self.origin[1]) * self.scale)))
+
+    def render(self, pose, detected_ids, frame_index: int, fps_value: float):
+        cfg = self.cfg
+        if pose is not None:
+            self.trail.append((pose["x"], pose["y"]))
+        self._fit()
+        canvas = np.full((self.height_px, self.width_px, 3),
+                         cfg["map_bg_bgr"], dtype=np.uint8)
+
+        # Surveyed extent. Top-left in pixels is (min_x, max_y) in world.
+        min_x, min_y, max_x, max_y = self.bounds
+        cv2.rectangle(canvas, self.to_px(min_x, max_y), self.to_px(max_x, min_y),
+                      tuple(cfg["map_bounds_bgr"]), 1)
+
+        # Markers at true physical size, so the drawing carries the same scale
+        # as the geometry: a tag that looks wrong here is placed wrong.
+        half = self.tag_size / 2.0
+        detected = set(detected_ids)
+        for marker_id, (cx, cy) in sorted(self.markers.items()):
+            seen = marker_id in detected
+            color = cfg["map_detected_bgr"] if seen else cfg["known_color_bgr"]
+            cv2.rectangle(canvas, self.to_px(cx - half, cy + half),
+                          self.to_px(cx + half, cy - half),
+                          tuple(color), -1 if seen else 1)
+            cv2.putText(canvas, str(marker_id), self.to_px(cx + half, cy + half),
+                        cv2.FONT_HERSHEY_SIMPLEX, cfg["map_label_scale"],
+                        tuple(color), 1, cv2.LINE_AA)
+
+        # Unsmoothed trail: every wobble in it is real measurement noise, and
+        # the point of v1 is that it stays visible.
+        if len(self.trail) > 1:
+            points = np.array([self.to_px(x, y) for x, y in self.trail], dtype=np.int32)
+            cv2.polylines(canvas, [points], False, tuple(cfg["map_trail_bgr"]), 1, cv2.LINE_AA)
+
+        lines = [f"frame {frame_index}   fps {fps_value:5.1f}"]
+        if pose is None:
+            lines.append("no pose")
+        else:
+            centre = self.to_px(pose["x"], pose["y"])
+            cv2.circle(canvas, centre, cfg["map_dot_px"], tuple(cfg["map_pose_bgr"]), -1)
+            # Heading is drawn a fixed number of pixels long rather than a
+            # fixed number of metres: it is a direction indicator, and a metric
+            # length would vanish on one rig and dominate the other. The minus
+            # on sin is the same image-Y-down flip as to_px, in pixel space.
+            angle = math.radians(pose["yaw_deg"])
+            tip = (int(round(centre[0] + cfg["map_heading_px"] * math.cos(angle))),
+                   int(round(centre[1] - cfg["map_heading_px"] * math.sin(angle))))
+            cv2.line(canvas, centre, tip, tuple(cfg["map_pose_bgr"]), 2, cv2.LINE_AA)
+
+            lines.append(f"x {pose['x']:+.3f}  y {pose['y']:+.3f}  yaw {pose['yaw_deg']:+6.1f}")
+            lines.append(f"markers {pose['n_markers']}: {pose['ids']}")
+            lines.append(f"reproj {pose['reproj_px']:.2f} px   "
+                         f"acc~{pose['acc_est_m'] * 1000:.1f} mm"
+                         + ("   SINGLE MARKER" if pose["single_marker"] else ""))
+        # Solid strip behind the status text. The camera view gets away with
+        # a shadow pass alone, but here the text lands on top of bright filled
+        # marker squares and their ID labels, which shadowing cannot rescue.
+        header_px = cfg["text_origin_px"][1] + len(lines) * cfg["text_line_height_px"]
+        cv2.rectangle(canvas, (0, 0), (self.width_px, header_px - cfg["text_line_height_px"] // 2),
+                      tuple(cfg["map_bg_bgr"]), -1)
+        draw_text_block(canvas, lines, cfg)
+        return canvas
+
+
+# --------------------------------------------------------------------------
+# Output  (build stage 4: per-frame CSV, and the UDP feed)
+# --------------------------------------------------------------------------
+
+# z_m is logged alongside x/y because it is the free scale check: the marker
+# map puts the plane at a known Z, so the solved camera Z is a direct readout
+# of range error, and a range off by a fixed fraction means the focal length is
+# off by that same fraction - which scales X and Y with it.
+CSV_COLUMNS = ["t", "frame", "x_m", "y_m", "z_m", "yaw_deg", "tilt_deg", "n_markers",
+               "ids", "reproj_px", "acc_est_m", "single_marker", "level_assumed"]
+
+
+def open_csv(path: Path):
+    """Open the per-frame log for append, writing a header only if new.
+
+    Append rather than truncate: overwriting would silently destroy the
+    previous run, and the report is built from these rows. Runs stay separable
+    without a filename scheme because `frame` restarts at 0 and `t` jumps.
+    """
+    path.parent.mkdir(parents=True, exist_ok=True)
+    fresh = not path.exists() or path.stat().st_size == 0
+    handle = open(path, "a", newline="", encoding="utf-8")
+    writer = csv.writer(handle)
+    if fresh:
+        writer.writerow(CSV_COLUMNS)
+    return handle, writer
+
+
+def csv_row(timestamp: float, frame_index: int, pose):
+    """One row per frame, including frames with no pose.
+
+    Frames without a pose are logged as blanks rather than skipped: the
+    fraction of frames that yielded a fix is itself a result, and it cannot be
+    recovered from a file that only kept the successes.
+    """
+    if pose is None:
+        return [f"{timestamp:.3f}", frame_index, "", "", "", "", "", 0, "", "", "", "", ""]
+    return [f"{timestamp:.3f}", frame_index,
+            f"{pose['x']:.6f}", f"{pose['y']:.6f}", f"{pose['z']:.6f}",
+            f"{pose['yaw_deg']:.3f}", f"{pose['tilt_deg']:.3f}",
+            pose["n_markers"], " ".join(str(i) for i in pose["ids"]),
+            f"{pose['reproj_px']:.4f}", f"{pose['acc_est_m']:.6f}",
+            int(pose["single_marker"]), int(pose["level_assumed"])]
+
+
+def make_publisher(udp_cfg: dict):
+    """Return a send(pose) callable. UDP JSON, one datagram per fix.
+
+    Fire-and-forget by design: a consumer that stalls or dies must not slow the
+    capture loop or block a frame. A dropped datagram costs one pose and the
+    next is along in ~30 ms. The payload stays flat so a ROS 2 bridge node is a
+    field-by-field copy.
+    """
+    if not udp_cfg.get("enabled", True):
+        return lambda pose: None
+    sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    address = (udp_cfg["host"], int(udp_cfg["port"]))
+
+    def send(pose) -> None:
+        payload = {"t": time.time(), "x": pose["x"], "y": pose["y"],
+                   "yaw_deg": pose["yaw_deg"], "markers": pose["ids"],
+                   "reproj_px": pose["reproj_px"], "acc_est_m": pose["acc_est_m"]}
+        sock.sendto(json.dumps(payload).encode("utf-8"), address)
+
+    return send
+
+
 # --------------------------------------------------------------------------
 # Main loop
 # --------------------------------------------------------------------------
@@ -596,6 +910,9 @@ def parse_args(argv=None):
                              "stream URL, or image folder")
     parser.add_argument("--calib", default="calib.npz", type=Path,
                         help="intrinsics; without them the loop runs detection only")
+    parser.add_argument("--assume-level", type=int, choices=(0, 1), default=None,
+                        help="override hall.json pose.assume_level. 1 constrains the "
+                             "solve to 4 DOF for a level mount; 0 uses full solvePnP.")
     parser.add_argument("--convention", nargs=2, type=int, default=(0, 0),
                         metavar=("ROTATION", "MIRROR"),
                         help="corner convention, as resolved by tools/eval_photos.py")
@@ -610,14 +927,23 @@ def main(argv=None) -> int:
     viz_cfg = hall["viz"]
     playback_cfg = hall["playback"]
 
+    pose_cfg = hall.get("pose", {})
+    assume_level = (bool(pose_cfg.get("assume_level", False))
+                    if args.assume_level is None else bool(args.assume_level))
+
     known_ids = set(marker_map["markers"])
     source_spec = args.source if args.source is not None else hall["source"]
     source = FrameSource(source_spec, hall["camera"])
     detector = make_detector(hall["detection"])
     fps = FpsMeter(viz_cfg["fps_window_frames"])
 
-    snapshot_dir = Path(hall["output"]["snapshot_dir"])
+    output_cfg = hall["output"]
+    snapshot_dir = Path(output_cfg["snapshot_dir"])
     snapshot_dir.mkdir(parents=True, exist_ok=True)
+    hall_map = HallMap(marker_map, viz_cfg)
+    csv_path = Path(output_cfg["csv_path"])
+    csv_handle, csv_writer = open_csv(csv_path)
+    publish = make_publisher(output_cfg["udp"])
 
     # Pose needs intrinsics. Rather than substitute a guessed focal length -
     # which would produce plausible-looking positions that are wrong by
@@ -641,13 +967,20 @@ def main(argv=None) -> int:
     # hardware only these two config numbers change; no code path differs.
     print(f"tag size    : {marker_map['tag_size_m']} m at "
           f"{marker_map['ceiling_height_m']} m ceiling")
+    # Printed loudly: this is an assertion about the physical rig, not a
+    # tuning knob, and a wrong one biases every position silently.
+    print(f"csv log     : {csv_path}")
+    udp_cfg = output_cfg["udp"]
+    print(f"udp feed    : {udp_cfg['host']}:{udp_cfg['port']}"
+          if udp_cfg.get("enabled", True) else "udp feed    : disabled")
+    print(f"pose model  : {'4-DOF, MOUNT ASSUMED LEVEL' if assume_level else '6-DOF solvePnP'}")
     print("keys        : q/ESC quit, space pause, s snapshot")
     if source.is_stills:
         # Copy-pasteable straight into the report. Z is here alongside X and Y
         # because it is the free scale check: the marker map pins the plane at
         # a known Z, so the solved camera Z is a direct readout of range error.
         print(f"\n{'photo':<24}{'x_m':>9}{'y_m':>9}{'z_m':>9}"
-              f"{'yaw':>7}{'n':>3}{'reproj':>8}{'acc_mm':>8}")
+              f"{'yaw':>7}{'tilt':>7}{'n':>3}{'reproj':>8}{'acc_mm':>8}")
 
     frame = None
     frame_index = 0
@@ -679,7 +1012,7 @@ def main(argv=None) -> int:
                 pose = None
                 if camera_matrix is not None:
                     pose = pose_from_detections(known, marker_map, camera_matrix,
-                                                dist_coeffs, offsets)
+                                                dist_coeffs, offsets, assume_level)
                     if pose is None:
                         lines.append("no pose: no mapped markers in view")
                     else:
@@ -700,10 +1033,21 @@ def main(argv=None) -> int:
                     else:
                         print(f"{name:<24}{pose['x']:>9.4f}{pose['y']:>9.4f}"
                               f"{pose['z']:>9.4f}{pose['yaw_deg']:>7.1f}"
-                              f"{pose['n_markers']:>3}{pose['reproj_px']:>8.3f}"
+                              f"{pose['tilt_deg']:>7.1f}{pose['n_markers']:>3}"
+                              f"{pose['reproj_px']:>8.3f}"
                               f"{pose['acc_est_m'] * 1000:>8.2f}")
 
                 cv2.imshow(viz_cfg["camera_window"], frame)
+                cv2.imshow(viz_cfg["map_window"],
+                           hall_map.render(pose, [i for i, _ in known],
+                                           frame_index, fps.value()))
+
+                # Log before publishing: the CSV is the record the report is
+                # written from, and a send that raises must not cost the row.
+                csv_writer.writerow(csv_row(time.time(), frame_index, pose))
+                if pose is not None:
+                    publish(pose)
+
                 frame_index += 1
 
             key = cv2.waitKey(playback_cfg["wait_ms"]) & 0xFF
@@ -716,6 +1060,7 @@ def main(argv=None) -> int:
                 cv2.imwrite(str(path), frame)
                 print(f"saved {path}")
     finally:
+        csv_handle.close()
         source.release()
         cv2.destroyAllWindows()
 

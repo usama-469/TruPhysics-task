@@ -193,6 +193,79 @@ Behaviour depends on whether `calib.npz` exists:
 It degrades rather than guessing a focal length, because guessed intrinsics produce
 plausible-looking positions that are wrong by however far the guess was off.
 
+### Pose model: 6-DOF or 4-DOF
+
+`pose.assume_level` in `hall.json` picks the solver, and `--assume-level 0|1` overrides it
+for one run. The active choice is printed at startup, because it is an assertion about the
+physical rig rather than a tuning knob.
+
+- **6-DOF (`false`)** — `cv2.solvePnP` over every visible marker's corners at once, with
+  `SOLVEPNP_IPPE_SQUARE` as the single-marker fallback. Makes no assumption about mounting.
+- **4-DOF (`true`)** — for a mount that holds the optical axis normal to the marker plane.
+  The world→image map is then a pure **similarity** — scale, in-plane rotation, two
+  translations — which is linear and solvable in closed form. No iteration, no branch, no
+  rotation ambiguity.
+
+The 4-DOF path exists because a level mount is the *worst* case for the unconstrained
+solver: a fronto-parallel square is exactly where `IPPE_SQUARE` degenerates, and `solvePnP`
+spends three rotational degrees of freedom estimating a tilt that is known to be zero.
+Measured on synthetic corners with 0.15 px of noise, median lateral error:
+
+| | 6-DOF | 4-DOF | 4-DOF reproj |
+|---|---|---|---|
+| 1 tag, level | 6.20 mm | **0.05 mm** | 0.132 px |
+| 6 tags, level | 0.43 mm | **0.02 mm** | 0.180 px |
+| 1 tag, 0.5° tilt | 6.13 mm | 6.63 mm | 0.229 px |
+| 6 tags, 0.5° tilt | 0.43 mm | 6.87 mm | 0.542 px |
+| 6 tags, 2° tilt | 0.34 mm | 26.93 mm | 2.136 px |
+
+Two things to read off that. On a genuinely level mount the constrained solve is one to two
+orders of magnitude better, and it rescues the single-marker case that is otherwise
+rotation-ambiguous. But when the promise is broken it degrades exactly as
+`range × tan(tilt)` predicts — 0.5° at 0.75 m is 6.5 mm — while the 6-DOF path is unmoved,
+because it models the tilt.
+
+**The residual polices the assumption.** A tilted square images as a trapezoid and no
+similarity can reproduce one, so `reproj_px` climbs with tilt in 4-DOF mode (0.18 → 0.54 →
+2.14 above) while staying flat in 6-DOF mode. In this mode `reproj_px` is a *levelness
+monitor*, not merely a fit statistic — and it is the only self-check the constrained solver
+has. Its sensitivity falls with range: at 0.75 m a 1° tilt moves a 0.2 m tag's image by over
+a pixel, but at 12 m a 0.24° tilt moves a 0.72 m tag by ~0.06 px, under the noise floor.
+Close in it will catch a bad mount; at ceiling height it will not, and levelling has to be
+verified mechanically.
+
+For context on how tight that is: **±5 cm at 12 m needs tilt under 0.24°**, roughly 4 mm of
+sag across a 1 m bracket.
+
+### Measure your tilt, don't assume it
+
+Every pose carries `tilt_deg` — the angle between the optical axis and the marker plane's
+normal — and it appears as a column in the per-still table. Run 6-DOF on a capture and read
+it off, rather than guessing whether the level assumption is defensible. The 4-DOF solve
+costs `range × tan(tilt_deg)`, so the number converts directly into the error you would be
+accepting.
+
+Read it from a grid, not from one tag. Measured against known tilts:
+
+| True tilt | From 1 tag | From 6 tags |
+|---|---|---|
+| 0.0° | 0.67° ±0.55 | 0.02° ±0.02 |
+| 1.0° | 1.17° ±0.45 | 0.99° ±0.02 |
+| 3.0° | 3.07° ±0.51 | 3.00° ±0.03 |
+| 8.0° | 8.17° ±0.60 | 8.00° ±0.03 |
+
+A single tag inherits its own rotation ambiguity and reads ~0.7° when the truth is zero, so
+it cannot confirm a level mount. A grid is exact to a few hundredths of a degree.
+
+**`assume_level` defaults to `false`**, because a handheld capture always has a few degrees
+of tilt and the bench photos are handheld. Turn it on for a camera that is genuinely fixed
+and levelled — the eventual Pi mount — not for photographs taken by hand.
+
+One consolation for handheld work: a tilt that stays *constant* across a set of shots
+produces a constant offset that cancels in any differential measurement. That is why the
+handedness result above was valid despite being shot by hand — it reads `dx` between
+positions, never absolute X.
+
 Functions worth knowing if you're reading the code:
 
 | Function | Does |
@@ -210,24 +283,69 @@ Functions worth knowing if you're reading the code:
 ### `tools/calibrate.py` — intrinsics
 
 ```bash
-python tools/calibrate.py --photos photos/calib --refine-win 9
+python tools/calibrate.py --photos photos/calib --refine-win 9          # tag grid
+python tools/calibrate.py --photos photos/calib_v2 \
+    --chessboard 9x6 --square-mm 42.339                                 # chessboard
 ```
 
-Calibrates from photos of the tag grid and writes `calib.npz`. The grid is a better
-calibration target than a printed chessboard here: its feature positions are exact,
-every corner carries an ID so partial views still contribute, and it is the same target
-through the same capture path as the actual test.
+Calibrates from photos of a planar target and writes `calib.npz`. Two targets work:
+
+- **Tag grid** (default). Feature positions are exact, every corner carries an ID so
+  partial views still contribute, and it is the same target through the same capture path
+  as the actual test.
+- **Chessboard** (`--chessboard COLSxROWS --square-mm S`, counts are *inner* corners).
+  Uses `findChessboardCornersSB`, falling back to the classic detector plus `cornerSubPix`.
+  The whole board must be visible in every view, so frame-corner coverage has to come from
+  moving the camera. That matters — distortion is largest at the frame edges and can only
+  be estimated where there are corners.
+
+The square size scales the recovered `tvecs` and nothing else: `fx`, `fy`, `cx`, `cy` and
+the distortion coefficients come out identical whatever you pass. A wrong panel diagonal
+costs nothing here — it costs later, in `markers.json`.
 
 Reports RMS reprojection error, per-view errors, focal length, principal point,
-distortion, and the spread of viewing angles. **Rejects above 0.5 px** — recapture rather
-than proceed, since every position error downstream inherits it.
+distortion, and the spread of viewing angles. **PASS at ≤ 0.5 px**, *marginal* between 0.5
+and 1.0 — check `worst` against the median, since a few bad photos are usually carrying it
+— and **reject above 1.0 px**.
+
+### RMS is necessary, not sufficient
+
+A low RMS does not mean a good calibration. Verified against synthetic photos generated
+from known intrinsics (fx 1256.0, cx 810.0, cy 590.0, k1 0.120, k2 −0.250):
+
+| Capture | RMS | Recovered fx | Verdict |
+|---|---|---|---|
+| 15 views, 0–30° tilt spread | 0.102 px | **1255.9** (0.008% out) | PASS |
+| 15 views, 0–3° tilt spread | 0.169 px | **1294.8** (3.1% out) | PASS, but *warned* |
+
+The second one **passes the RMS gate while `fx` is 3.1% wrong** — and a 3.1% focal error
+is a 3.1% error on every distance reported, forever. A planar target shot near face-on
+cannot separate focal length from distance; the two trade off exactly, and the residual
+stays small because the wrong answer still fits. This is why the script prints the tilt
+spread and warns below 20°. **Read that line before believing the RMS.**
 
 Shooting: 15–25 photos, one lens only, JPEG not HEIC, HDR and portrait mode off, same
-resolution and orientation throughout, tilts from face-on out to 40–50°. A planar target
-shot only face-on cannot separate focal length from distance; the script warns if your
-tilt spread is under 20°.
+resolution and orientation throughout, tilts from face-on out to 40–50° in several
+directions, plus a couple of rolls.
 
 `--free-k3` and `--rational` change the distortion model; you rarely want either.
+
+### `tools/chessboard.py` — chessboard target
+
+```bash
+python tools/chessboard.py                       # 9x6 inner corners
+python tools/chessboard.py --inner 7x5 --margin-mm 30
+```
+
+Displays a chessboard fullscreen at native resolution and prints the square size in mm,
+then the exact `calibrate.py` command to run. On the 27" 1920×1080 panel, 9×6 inner
+corners gives **42.339 mm squares at 136 px**, snapped to whole pixels so no square is
+resampled unevenly across its face — uneven resampling biases sub-pixel corner refinement,
+which is the one thing calibration cannot tolerate.
+
+Inner-corner counts must differ (9×6, not 6×6): a square board is rotationally ambiguous
+and the corner ordering can flip between views, silently corrupting correspondences. The
+script refuses a square pattern.
 
 ### `tools/eval_photos.py` — handedness and error
 
@@ -259,6 +377,37 @@ Neither covers camera tilt or survey error. For an absolute check use `--offset-
 
 Use **different photos** from the calibration set. Reusing them reports the fit, not the
 accuracy.
+
+### `tools/eval_shift.py` — handedness from a fixed camera
+
+Two runs, because the camera is a phone rather than a webcam:
+
+```bash
+python tools/eval_shift.py --display --offsets-mm 0 100 -100
+python tools/eval_shift.py --photos photos/handedness --offsets-mm 0 100 -100 \
+    --assume-hfov-deg 65
+```
+
+`--display` puts each tag position on screen at native size and waits for a keypress, so
+you photograph each one without moving the camera. `--photos` reads them back in filename
+order, pairs them with the offsets, and prints the sign verdict.
+
+Needs no calibration. The sign falls out of the corner ordering and the local→world
+composition, so a guessed focal length gets the direction right while getting every
+distance wrong — and the tool says so on every line it prints in that mode.
+
+Prefer the default 3×2 grid over a single tag. One square is rotation-ambiguous, and about
+a degree of rotation error at 0.75 m is over a centimetre of lateral error; a grid pins
+rotation through the shared plane. Measured in simulation on a 100 mm shift:
+
+| Grid | X error at rest | Worst shift error |
+|---|---|---|
+| 1×1, 200 mm | 17.1 mm | 54.0 mm |
+| 3×2, 90 mm | 1.2 mm | 1.7 mm |
+
+A mirrored capture path does not produce a wrong sign — `cv2.aruco` will not detect a
+mirrored tag at all, so it fails at detection. Use the phone's rear camera, and shoot JPEG:
+OpenCV cannot read HEIC.
 
 ### `tools/screen_tags.py` — the grid
 
@@ -309,6 +458,7 @@ no matplotlib.
 | `markers` | Path to the marker map. Switching between the screen rig and a real ceiling is a change here, not a flag on every command. |
 | `camera.backend` | `auto`, `dshow`, `msmf`, `v4l2`, `ffmpeg`. On Windows the default MSMF often ignores property writes; try `dshow` if the startup readout says `IGNORED BY DRIVER`. |
 | `camera.autofocus`, `focus`, `auto_exposure`, `exposure` | Locks. Autofocus hunting mid-run shifts the apparent tag size and looks exactly like algorithm failure. Values are raw driver values and backends disagree about them, hence the readout at startup. |
+| `pose.assume_level` | `true` constrains the solve to 4 DOF for a mount whose optical axis is normal to the marker plane; `false` uses full 6-DOF `solvePnP`. An assertion about the rig — see *Pose model* above. |
 | `detection.corner_refinement` | `subpix` by default. Not cosmetic — corner error propagates roughly linearly into position. |
 | `detection.corner_refine_win_size` | 5 suits webcam frames. Raise to ~9 for high-resolution stills, or pass `--refine-win`. |
 | `viz.*` | Window name, colours, text layout. |
@@ -350,8 +500,56 @@ R, _ = cv2.Rodrigues(rvec)
 C = (-R.T @ tvec).ravel()
 ```
 
-The corner-order mapping has a handedness trap. Do not reason about it — resolve it with
-`tools/eval_photos.py`, which is what the empirical check in the spec asks for.
+The corner-order mapping has a handedness trap. Do not reason about it — resolve it
+empirically, with `tools/eval_shift.py` or `tools/eval_photos.py`.
+
+### Measured handedness — screen rig, 2026-08-24
+
+| Axis | Maps to | Status |
+|---|---|---|
+| World **+X** | screen right, as seen by a viewer facing the panel | **verified by displacement** |
+| World **+Y** | screen **down** | not displacement-tested — see below |
+| World **+Z** | into the screen, away from the camera | sign confirmed: solved camera Z is negative |
+
+**Verdict: world X is not mirrored.** `starnav.corner_offsets` rotation 0, mirror False
+holds for this rig, which is the default `--convention 0 0`.
+
+**How it was verified.** The camera was fixed and the *grid* was displaced a known amount,
+rather than moving the camera against a tape measure — a shift of a whole number of screen
+pixels is known to a fraction of a millimetre and costs nothing to repeat. Six tags
+(3×2, 89.66 mm) were photographed at three positions from one fixed iPhone, each step
+solved against the single map written at offset 0. The solver therefore believes the tags
+never moved, so a pattern sliding 100 mm right can only be explained by a camera sliding
+100 mm left:
+
+```
+ shift_mm   n  tags      x_mm    dx_mm  expected  error_mm  x_upd_mm  reproj
+     0.00   1     6    237.17     0.00     -0.00      0.00    237.17   2.721
+    99.93   1     6    137.88   -99.28    -99.93      0.65    237.82   3.157
+   -99.93   1     6    303.64    66.48     99.93    -33.46    203.71   2.753
+
+Z (panel distance) : -815.2, -811.8, -815.5 mm
+```
+
+Both directions agree on the sign, and the margin is comfortable: flipping the verdict
+would need errors of 99 mm and 66 mm against a worst observed 33 mm.
+
+**What this does not establish.** Three things, deliberately:
+
+- **Y was never displaced.** `eval_shift.py` shifts X only, so the Y row above is inherited
+  from how `screen_tags.py` writes the map, plus the synthetic assertion in
+  `test_starnav.py`. It has not been confirmed against a real photograph.
+- **The millimetres are not metric.** This ran in sign-only mode with no `calib.npz`,
+  assuming zero distortion and a focal length guessed from a 65° field of view. The
+  −33.46 mm outlier and the ~2.7 px residuals are that missing distortion model, not
+  algorithm error; in simulation with correct intrinsics the same test residuals were
+  0.21–0.25 px. The verdict is robust to the guess — it came out identical for every
+  assumed field of view from 35° to 110°.
+- **Ceiling markers are still unverified.** This is a vertical panel viewed from the front.
+  Re-run the check with tags overhead before trusting the sign in the hall.
+
+The steady Z across all three shots (3.7 mm spread) is what rules out the phone being
+knocked between exposures.
 
 ---
 
@@ -379,8 +577,24 @@ IMU, or multi-marker geometry constraining orientation — not more megapixels.
 Built: detection, single-marker pose, multi-marker fused solve, accuracy estimate,
 calibration, handedness resolution, error measurement, figures.
 
+Handedness is **resolved and recorded** — see *Measured handedness* under Coordinate
+frames. World +X is screen-right and not mirrored, verified by displacing the grid a known
+100 mm with the camera fixed. Y has not been displacement-tested.
+
+Pointing `--source` at a folder of stills prints one `x_m y_m z_m` row per photo, which is
+the readout the sign check is made from. `python test_starnav.py` runs the self-checks:
+the single-marker sign convention, and the fronto-parallel degeneracy that `IPPE_SQUARE`
+falls into at exactly 0° tilt.
+
 Not built yet: the hall map window (2D top-down plot with trail), per-frame CSV logging
-from the live loop, and the UDP JSON publisher.
+from the live loop, and the UDP JSON publisher. `calib.npz` was deleted — the previous one
+was derived from video frames and its 1.63 px RMS failed the 0.5 px gate — so nothing
+metric runs until a fresh calibration exists.
+
+The pose solver is selectable: 6-DOF `solvePnP`, or a 4-DOF similarity fit for a level
+mount (`pose.assume_level`, currently **true**). The evaluation rig assumes no tilt; tilt
+handling comes later, and the 4-DOF residual is what flags the assumption breaking in the
+meantime.
 
 No smoothing anywhere, deliberately. Raw per-frame output only, so jitter stays visible
 and measurable. A filter goes in after the noise floor is logged, not before.
