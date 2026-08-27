@@ -46,6 +46,9 @@ def parse_args(argv=None):
     parser.add_argument("--delay", type=float, default=5.0,
                         help="grace period before capture starts, to bring the tag "
                              "window up and get hands out of frame")
+    parser.add_argument("--every", type=int, default=1,
+                        help="keep every Nth frame. Extracting calibration views from "
+                             "a clip wants spread, not 20 near-identical neighbours.")
     parser.add_argument("--max-frames", type=int, default=2000,
                         help="hard cap, so a mistake cannot fill the disk")
     return parser.parse_args(argv)
@@ -73,14 +76,19 @@ def main(argv=None) -> int:
     started = time.perf_counter()
     count = 0
     try:
+        seen = 0
         while count < args.max_frames:
-            elapsed = time.perf_counter() - started
-            if elapsed >= args.seconds:
+            # A file has its own end; only a live camera needs a stopwatch.
+            if source.is_live and time.perf_counter() - started >= args.seconds:
                 break
             frame = source.read()
             if frame is None:
-                print("source ended early")
+                if source.is_live:
+                    print("source ended early")
                 break
+            seen += 1
+            if (seen - 1) % max(1, args.every):
+                continue
             # Zero-padded so the folder replays in capture order: an image
             # sequence has no timestamps, filename order is all there is.
             cv2.imwrite(str(args.out / f"frame_{count:06d}.png"), frame)

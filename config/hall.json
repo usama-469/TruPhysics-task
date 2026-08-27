@@ -1,6 +1,6 @@
 {
   "source": "0",
-  "markers": "config/markers_screen.json",
+  "markers": "config/markers.json",
   "camera": {
     "backend": "auto",
     "frame_width": 1280,
@@ -89,6 +89,9 @@
   "output": {
     "csv_path": "logs/track.csv",
     "snapshot_dir": "logs/snapshots",
+    "save_visualization": true,
+    "visualization_dir": "logs",
+    "video_fps": 30.0,
     "udp": {
       "enabled": true,
       "host": "127.0.0.1",

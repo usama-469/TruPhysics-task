@@ -72,6 +72,9 @@ CAPTURE_BACKENDS = {
     "ffmpeg": cv2.CAP_FFMPEG,
 }
 
+# Longest the map's status block gets: frame/fps, position, markers, quality.
+MAP_TEXT_LINES = 4
+
 CORNER_REFINEMENT = {
     "none": cv2.aruco.CORNER_REFINE_NONE,
     "subpix": cv2.aruco.CORNER_REFINE_SUBPIX,
@@ -144,6 +147,9 @@ class FrameSource:
         # would flood the terminal and its record is the window, not stdout.
         self.is_stills = False
         self.frame_name = ""
+        # Frame rate of the source, so a recording of the map plays back at the
+        # same speed as the run it came from. A folder of stills has none.
+        self.fps = None
         self.is_live = False
         self._capture = None
         self._image_paths = []
@@ -170,6 +176,7 @@ class FrameSource:
                 f"'{backend_name}' - try another index or backend in hall.json"
             )
         self.is_live = True
+        self.fps = self._reported_fps()
         self.kind = f"webcam {index} ({backend_name})"
         self._apply_camera_settings(camera_cfg)
 
@@ -216,7 +223,17 @@ class FrameSource:
         # same streaming path: re-encoding, cropping and digital stabilisation
         # all change the intrinsics without changing anything visible.
         self.is_live = "://" in spec
+        self.fps = self._reported_fps()
         self.kind = f"{'stream' if self.is_live else 'video file'} '{spec}'"
+
+    def _reported_fps(self):
+        """Frame rate the backend claims, or None when it claims nonsense.
+
+        Webcams frequently report 0, and some containers report absurd values,
+        so the number is range-checked rather than trusted.
+        """
+        value = self._capture.get(cv2.CAP_PROP_FPS)
+        return float(value) if 1.0 < value < 1000.0 else None
 
     # -- image folder ------------------------------------------------------
 
@@ -701,6 +718,12 @@ class HallMap:
 
         self.cfg = viz_cfg
         self.trail = deque(maxlen=viz_cfg["map_trail_len"])
+        # The status text gets its own band at the top rather than being drawn
+        # over the plot. Painting it on top hid whichever markers happened to
+        # sit in the top rows - and they were still listed as detected, so the
+        # map disagreed with its own caption.
+        self.header_px = (viz_cfg["text_origin_px"][1]
+                          + MAP_TEXT_LINES * viz_cfg["text_line_height_px"])
 
         # Canvas size is fixed once, from the aspect of the surveyed area, so
         # the window never resizes mid-run. The margin is deliberately not in
@@ -758,14 +781,15 @@ class HallMap:
         sign error in the solver, which is the wrong place to go looking.
         """
         return (int(round((x - self.origin[0]) * self.scale)),
-                int(round(self.height_px - (y - self.origin[1]) * self.scale)))
+                int(round(self.header_px + self.height_px
+                          - (y - self.origin[1]) * self.scale)))
 
     def render(self, pose, detected_ids, frame_index: int, fps_value: float):
         cfg = self.cfg
         if pose is not None:
             self.trail.append((pose["x"], pose["y"]))
         self._fit()
-        canvas = np.full((self.height_px, self.width_px, 3),
+        canvas = np.full((self.header_px + self.height_px, self.width_px, 3),
                          cfg["map_bg_bgr"], dtype=np.uint8)
 
         # Surveyed extent. Top-left in pixels is (min_x, max_y) in world.
@@ -813,12 +837,10 @@ class HallMap:
             lines.append(f"reproj {pose['reproj_px']:.2f} px   "
                          f"acc~{pose['acc_est_m'] * 1000:.1f} mm"
                          + ("   SINGLE MARKER" if pose["single_marker"] else ""))
-        # Solid strip behind the status text. The camera view gets away with
-        # a shadow pass alone, but here the text lands on top of bright filled
-        # marker squares and their ID labels, which shadowing cannot rescue.
-        header_px = cfg["text_origin_px"][1] + len(lines) * cfg["text_line_height_px"]
-        cv2.rectangle(canvas, (0, 0), (self.width_px, header_px - cfg["text_line_height_px"] // 2),
-                      tuple(cfg["map_bg_bgr"]), -1)
+        # A rule under the reserved band, so the caption reads as a header
+        # rather than as text floating over the plot.
+        cv2.line(canvas, (0, self.header_px - 1), (self.width_px, self.header_px - 1),
+                 tuple(cfg["map_bounds_bgr"]), 1)
         draw_text_block(canvas, lines, cfg)
         return canvas
 
@@ -890,6 +912,30 @@ def make_publisher(udp_cfg: dict):
     return send
 
 
+def open_visualization_writer(output_cfg: dict, size, fps: float):
+    """Start recording the hall map to a timestamped video, or return None.
+
+    The demonstration has to show the map tracking the camera, so the map is
+    recorded here rather than left to external screen-capture software: that
+    way the recording is exactly the frames the solver produced, at the source's
+    own frame rate, with nothing dropped by a capture tool.
+
+    A missing codec must not take the run down with it - the position output is
+    the point and the video is a convenience - so a writer that will not open is
+    reported and skipped.
+    """
+    if not output_cfg.get("save_visualization", True):
+        return None, None
+    folder = Path(output_cfg.get("visualization_dir", "logs"))
+    folder.mkdir(parents=True, exist_ok=True)
+    path = folder / f"visualization_{time.strftime('%Y%m%d_%H%M%S')}.mp4"
+    writer = cv2.VideoWriter(str(path), cv2.VideoWriter_fourcc(*"mp4v"), fps, size)
+    if not writer.isOpened():
+        print(f"visualization: could not open {path} for writing (codec?) - not recording")
+        return None, None
+    return writer, path
+
+
 # --------------------------------------------------------------------------
 # Main loop
 # --------------------------------------------------------------------------
@@ -944,11 +990,12 @@ def main(argv=None) -> int:
     csv_path = Path(output_cfg["csv_path"])
     csv_handle, csv_writer = open_csv(csv_path)
     publish = make_publisher(output_cfg["udp"])
+    viz_writer = viz_path = None
 
     # Pose needs intrinsics. Rather than substitute a guessed focal length -
     # which would produce plausible-looking positions that are wrong by
     # whatever fraction the guess was off - the loop degrades to stage 1.
-    camera_matrix = dist_coeffs = None
+    camera_matrix = dist_coeffs = calib_size = None
     offsets = corner_offsets(marker_map["tag_size_m"] / 2.0,
                              int(args.convention[0]), bool(args.convention[1]))
     if args.calib.exists():
@@ -996,6 +1043,22 @@ def main(argv=None) -> int:
                     break
 
                 fps.tick()
+                if frame_index == 0 and calib_size is not None:
+                    # Intrinsics belong to ONE sensor readout. Stills and video
+                    # on a phone are different aspect ratios AND different crops
+                    # of the sensor, so a stills calibration silently produces a
+                    # confident, wrong position on video. Checked on the first
+                    # frame rather than trusted.
+                    got = (frame.shape[1], frame.shape[0])
+                    if got != tuple(calib_size):
+                        raise SystemExit(
+                            f"calibration is for {calib_size[0]}x{calib_size[1]} but "
+                            f"these frames are {got[0]}x{got[1]}. Intrinsics do not "
+                            f"transfer between a phone's stills and its video - the "
+                            f"aspect ratio and the sensor crop both differ. Calibrate "
+                            f"at the resolution you will run at, or pass --calib with "
+                            f"one that matches.")
+
                 # Detection runs on greyscale; the colour frame is display only.
                 gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
                 corners, ids, _rejected = detector.detectMarkers(gray)
@@ -1038,9 +1101,20 @@ def main(argv=None) -> int:
                               f"{pose['acc_est_m'] * 1000:>8.2f}")
 
                 cv2.imshow(viz_cfg["camera_window"], frame)
-                cv2.imshow(viz_cfg["map_window"],
-                           hall_map.render(pose, [i for i, _ in known],
-                                           frame_index, fps.value()))
+                map_canvas = hall_map.render(pose, [i for i, _ in known],
+                                             frame_index, fps.value())
+                cv2.imshow(viz_cfg["map_window"], map_canvas)
+                if viz_writer is None and frame_index == 0:
+                    # Opened on the first frame because the canvas size is not
+                    # known until the map has been laid out.
+                    height, width = map_canvas.shape[:2]
+                    viz_writer, viz_path = open_visualization_writer(
+                        output_cfg, (width, height),
+                        source.fps or output_cfg.get("video_fps", 30.0))
+                    if viz_path:
+                        print(f"recording map -> {viz_path}")
+                if viz_writer is not None:
+                    viz_writer.write(map_canvas)
 
                 # Log before publishing: the CSV is the record the report is
                 # written from, and a send that raises must not cost the row.
@@ -1060,6 +1134,9 @@ def main(argv=None) -> int:
                 cv2.imwrite(str(path), frame)
                 print(f"saved {path}")
     finally:
+        if viz_writer is not None:
+            viz_writer.release()
+            print(f"wrote {viz_path}")
         csv_handle.close()
         source.release()
         cv2.destroyAllWindows()

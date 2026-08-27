@@ -37,6 +37,7 @@ DICT_4X4_CELLS = 6
 
 # A4 minus a typical 5 mm unprintable margin. Only used to warn.
 A4_PRINTABLE_MM = (200.0, 287.0)
+A4_FULL_MM = (210.0, 297.0)
 
 LABEL_HEIGHT_PX_PER_INCH = 0.45  # label strip height, in inches of paper
 TICK_LENGTH_FRACTION = 0.5       # ruler tick length as a fraction of the quiet zone
@@ -90,6 +91,28 @@ def render_tag(dictionary, marker_id: int, tag_size_m: float, dpi: int,
     return sheet
 
 
+def on_page(sheet, dpi: int, page_mm=A4_FULL_MM):
+    """Centre the tag sheet on a full page-sized canvas.
+
+    For printers that will not let you disable "fit to page". A page-sized image
+    maps onto the page as a single uniform scale instead of an unknown one, so
+    whatever shrink the driver applies hits every tag identically and one ruler
+    measurement recovers it. It does not make the print exact - only measuring
+    does that - it makes it predictable and the same on every sheet.
+    """
+    page_w = int(round(page_mm[0] / MM_PER_INCH * dpi))
+    page_h = int(round(page_mm[1] / MM_PER_INCH * dpi))
+    height, width = sheet.shape[:2]
+    if width > page_w or height > page_h:
+        raise SystemExit(
+            f"sheet {width}x{height} px does not fit a {page_mm[0]}x{page_mm[1]} mm "
+            f"page at {dpi} dpi - use a smaller --tag-size-m or --quiet-cells")
+    page = np.full((page_h, page_w), WHITE, dtype=np.uint8)
+    top, left = (page_h - height) // 2, (page_w - width) // 2
+    page[top:top + height, left:left + width] = sheet
+    return page
+
+
 def parse_args(argv=None):
     parser = argparse.ArgumentParser(description="printable ArUco tags at an exact physical size")
     parser.add_argument("--markers", default="config/markers.json", type=Path,
@@ -102,6 +125,9 @@ def parse_args(argv=None):
                         help="white border width in tag bit-cells (1 is the ArUco minimum)")
     parser.add_argument("--ids", nargs="*", type=int, default=None,
                         help="subset of IDs to render (default: all in markers.json)")
+    parser.add_argument("--page", choices=("none", "a4"), default="none",
+                        help="a4 centres each tag on a full A4 canvas, for printers "
+                             "that cannot disable 'fit to page'")
     parser.add_argument("--tag-size-m", type=float, default=None,
                         help="override tag_size_m, e.g. to print a larger test tag")
     return parser.parse_args(argv)
@@ -121,6 +147,8 @@ def main(argv=None) -> int:
     sheet = None
     for marker_id in ids:
         sheet = render_tag(dictionary, marker_id, tag_size_m, args.dpi, args.quiet_cells)
+        if args.page == "a4":
+            sheet = on_page(sheet, args.dpi)
         path = args.out / f"tag_{marker_id:03d}_{tag_size_m * 1000:.0f}mm.png"
         cv2.imwrite(str(path), sheet)
         print(f"{path}  {sheet.shape[1]}x{sheet.shape[0]} px")
@@ -128,7 +156,17 @@ def main(argv=None) -> int:
     sheet_mm = (sheet.shape[1] / args.dpi * MM_PER_INCH,
                 sheet.shape[0] / args.dpi * MM_PER_INCH)
     print(f"\nsheet size   : {sheet_mm[0]:.0f} x {sheet_mm[1]:.0f} mm")
-    if sheet_mm[0] > A4_PRINTABLE_MM[0] or sheet_mm[1] > A4_PRINTABLE_MM[1]:
+    if args.page == "a4":
+        # A page-sized image is supposed to exceed the printable area: the
+        # driver shrinks it to the margins, by one factor, on every sheet.
+        # That is the whole point of the mode, so the size warning does not apply.
+        shrink = min(A4_PRINTABLE_MM[0] / sheet_mm[0], A4_PRINTABLE_MM[1] / sheet_mm[1])
+        print(f"page mode    : full A4. 'Fit to page' shrinks this by about "
+              f"{shrink:.3f} - the same on every sheet - so the tag should land "
+              f"near {tag_size_m * 1000 * shrink:.0f} mm.")
+        print("               That is an ESTIMATE from typical margins. Measure "
+              "tick-to-tick and put the real number in tag_size_m.")
+    elif sheet_mm[0] > A4_PRINTABLE_MM[0] or sheet_mm[1] > A4_PRINTABLE_MM[1]:
         print(f"WARNING      : larger than the A4 printable area "
               f"({A4_PRINTABLE_MM[0]:.0f} x {A4_PRINTABLE_MM[1]:.0f} mm). Printing this "
               f"will silently scale the tag and corrupt tag_size_m. Use larger paper, "
@@ -138,7 +176,10 @@ def main(argv=None) -> int:
     # metadata and viewers will guess. Print at 100% / "actual size" with page
     # scaling off, then check the tick-to-tick distance with a ruler.
     print(f"\n{len(ids)} tags, {dictionary_name}, {tag_size_m * 1000:.0f} mm edge at {args.dpi} dpi")
-    print("print at 100% (no 'fit to page'), then measure tick-to-tick before taping up")
+    if args.page == "a4":
+        print("let 'fit to page' scale it, then measure tick-to-tick before taping up")
+    else:
+        print("print at 100% (no 'fit to page'), then measure tick-to-tick before taping up")
     return 0
 
 

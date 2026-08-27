@@ -210,10 +210,12 @@ def test_map_transform():
     assert hall_map.to_px(0.0, 1.0)[1] < hall_map.to_px(0.0, 0.0)[1]
     assert hall_map.to_px(1.0, 0.0)[0] > hall_map.to_px(0.0, 0.0)[0]
 
+    # Every marker lands inside the plot area, below the header band - the
+    # regression that hid the top row of markers under the status text.
     for x, y in HALL["markers"].values():
         col, row = hall_map.to_px(x, y)
         assert 0 < col < hall_map.width_px, (x, y, col)
-        assert 0 < row < hall_map.height_px, (x, y, row)
+        assert hall_map.header_px < row < hall_map.header_px + hall_map.height_px, (x, y, row)
 
     # One scale for both axes: a metre is the same length either way.
     span_x = hall_map.to_px(1.0, 0.0)[0] - hall_map.to_px(0.0, 0.0)[0]
@@ -227,7 +229,9 @@ def test_map_renders():
             "reproj_px": 0.31, "acc_est_m": 0.012, "single_marker": False}
     for frame in (hall_map.render(None, [], 0, 0.0),
                   hall_map.render(pose, [0, 4], 1, 30.0)):
-        assert frame.shape == (hall_map.height_px, hall_map.width_px, 3)
+        # canvas = reserved header band + the plot area
+        assert frame.shape == (hall_map.header_px + hall_map.height_px,
+                               hall_map.width_px, 3)
     assert len(hall_map.trail) == 1  # only the frame that had a pose
 
 

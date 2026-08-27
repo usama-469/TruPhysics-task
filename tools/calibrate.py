@@ -196,7 +196,7 @@ def report_exif(paths) -> None:
     print("               macro mode does not cut in.")
 
 
-def collect_views(paths, detector, marker_map, offsets):
+def collect_views(paths, detector, marker_map, offsets, min_markers=None):
     """Detect the grid in each photo and build its point correspondences.
 
     Object points are built in the marker plane's OWN frame, at Z = 0, rather
@@ -226,7 +226,7 @@ def collect_views(paths, detector, marker_map, offsets):
 
         corners, ids, _ = detector.detectMarkers(image)
         known, _unknown = starnav.split_known_unknown(corners, ids, set(marker_map["markers"]))
-        if len(known) < MIN_MARKERS_PER_VIEW:
+        if len(known) < (min_markers or MIN_MARKERS_PER_VIEW):
             skipped.append((path.name, f"only {len(known)} mapped markers"))
             continue
 
@@ -317,6 +317,11 @@ def per_view_errors(object_points, image_points, rvecs, tvecs, camera_matrix, di
 def parse_args(argv=None):
     parser = argparse.ArgumentParser(description="calibrate from photos of the screen tag grid")
     parser.add_argument("--photos", type=Path, required=True, help="folder of calibration photos")
+    parser.add_argument("--min-markers", type=int, default=None,
+                        help=f"markers a view must show to be used (default "
+                             f"{MIN_MARKERS_PER_VIEW}). Lower it for a small grid: an "
+                             f"oblique view of a 9-tag ceiling often shows only 4-5, and "
+                             f"those are exactly the views that make the solve well posed.")
     parser.add_argument("--chessboard", default=None, metavar="COLSxROWS",
                         help="calibrate from a chessboard instead of the tag grid. "
                              "COLSxROWS are INNER corner counts, e.g. 9x6.")
@@ -368,7 +373,7 @@ def main(argv=None) -> int:
         offsets = starnav.corner_offsets(marker_map["tag_size_m"] / 2.0)
         target = f"tag grid from {args.markers}"
         object_points, image_points, image_size, used, skipped = collect_views(
-            paths, detector, marker_map, offsets)
+            paths, detector, marker_map, offsets, args.min_markers)
 
     print(f"target       : {target}")
     print(f"photos found : {len(paths)}")
