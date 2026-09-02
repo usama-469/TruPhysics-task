@@ -211,12 +211,34 @@ class FrameSource:
         properties = [
             ("frame_width", cv2.CAP_PROP_FRAME_WIDTH),
             ("frame_height", cv2.CAP_PROP_FRAME_HEIGHT),
+            # Asking for more frames than the loop can consume is not free: the
+            # driver still moves them across USB, and on a bandwidth-marginal
+            # link the surplus shows up as torn frames rather than as dropped
+            # ones. Matching the requested rate to what detection can actually
+            # keep up with buys bandwidth back without touching resolution -
+            # which matters because resolution is what the intrinsics are tied to.
+            ("fps", cv2.CAP_PROP_FPS),
             ("autofocus", cv2.CAP_PROP_AUTOFOCUS),
             ("focus", cv2.CAP_PROP_FOCUS),
             ("auto_exposure", cv2.CAP_PROP_AUTO_EXPOSURE),
             ("exposure", cv2.CAP_PROP_EXPOSURE),
         ]
         print("camera settings (requested -> actual):")
+
+        # Format before size. A UVC camera advertises a DIFFERENT set of
+        # resolutions per pixel format, so a size requested while the driver is
+        # still on its default format gets silently replaced by the nearest mode
+        # that format supports - which is how you end up at 800x720 having asked
+        # for 1280x720. High-resolution sensors reach their useful frame rates
+        # only in MJPG; raw YUYV is bandwidth-starved over USB.
+        fourcc = camera_cfg.get("fourcc")
+        if fourcc:
+            self._capture.set(cv2.CAP_PROP_FOURCC, cv2.VideoWriter_fourcc(*fourcc))
+            code = int(self._capture.get(cv2.CAP_PROP_FOURCC))
+            actual = "".join(chr((code >> 8 * i) & 0xFF) for i in range(4))
+            status = "ok" if actual == fourcc else "IGNORED BY DRIVER"
+            print(f"  {'fourcc':<13} {fourcc} -> {actual} [{status}]")
+
         for name, prop in properties:
             wanted = camera_cfg.get(name)
             if wanted is None:
