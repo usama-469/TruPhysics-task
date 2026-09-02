@@ -18,7 +18,11 @@
     "corner_refine_min_accuracy": 0.05
   },
   "pose": {
-    "assume_level": false
+    "assume_level": false,
+    "convention": [
+      0,
+      0
+    ]
   },
   "viz": {
     "camera_window": "starnav - camera",
@@ -80,7 +84,8 @@
       150,
       110,
       90
-    ]
+    ],
+    "map_y_down": true
   },
   "playback": {
     "wait_ms": 1,
@@ -92,6 +97,8 @@
     "save_visualization": true,
     "visualization_dir": "logs",
     "video_fps": 30.0,
+    "save_camera_video": true,
+    "camera_video_width": 1280,
     "udp": {
       "enabled": true,
       "host": "127.0.0.1",

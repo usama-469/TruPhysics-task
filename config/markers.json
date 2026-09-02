@@ -1,6 +1,6 @@
 {
-  "tag_size_m": 0.150,
-  "ceiling_height_m": 2.500,
+  "tag_size_m": 0.1435,
+  "ceiling_height_m": 2.400,
   "survey_uncertainty_m": 0.008,
   "markers": {
     "0": [0.000, 1.704],

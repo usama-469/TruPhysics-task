@@ -203,12 +203,21 @@ def test_face_on_is_degenerate_but_flagged():
 def test_map_transform():
     hall_map = starnav.HallMap(HALL, VIZ)
 
-    # World +Y is drawn UP the image, so a larger Y must give a SMALLER row.
-    # This is the assertion that fails if the flip in to_px is ever dropped -
-    # a mirrored map reads exactly like a sign error in the solver, which is
-    # the wrong place to go looking.
-    assert hall_map.to_px(0.0, 1.0)[1] < hall_map.to_px(0.0, 0.0)[1]
+    # Which way +Y draws is a property of the world frame, not a taste, and
+    # both directions have to work. A right-handed wall or ceiling survey ends
+    # up Y-DOWN, and drawing that with +Y up puts the markers in the right
+    # place while sending the moving dot the wrong way - correct-looking and
+    # wrong, which is the worst kind of bug.
     assert hall_map.to_px(1.0, 0.0)[0] > hall_map.to_px(0.0, 0.0)[0]
+    if hall_map.y_down:
+        assert hall_map.to_px(0.0, 1.0)[1] > hall_map.to_px(0.0, 0.0)[1]
+    else:
+        assert hall_map.to_px(0.0, 1.0)[1] < hall_map.to_px(0.0, 0.0)[1]
+
+    # and the flag actually reverses it
+    flipped = starnav.HallMap(HALL, dict(VIZ, map_y_down=not hall_map.y_down))
+    assert ((flipped.to_px(0.0, 1.0)[1] > flipped.to_px(0.0, 0.0)[1])
+            != (hall_map.to_px(0.0, 1.0)[1] > hall_map.to_px(0.0, 0.0)[1]))
 
     # Every marker lands inside the plot area, below the header band - the
     # regression that hid the top row of markers under the status text.
@@ -219,7 +228,7 @@ def test_map_transform():
 
     # One scale for both axes: a metre is the same length either way.
     span_x = hall_map.to_px(1.0, 0.0)[0] - hall_map.to_px(0.0, 0.0)[0]
-    span_y = hall_map.to_px(0.0, 0.0)[1] - hall_map.to_px(0.0, 1.0)[1]
+    span_y = abs(hall_map.to_px(0.0, 0.0)[1] - hall_map.to_px(0.0, 1.0)[1])
     assert abs(span_x - span_y) <= 1, (span_x, span_y)
 
 

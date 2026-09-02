@@ -317,6 +317,11 @@ def per_view_errors(object_points, image_points, rvecs, tvecs, camera_matrix, di
 def parse_args(argv=None):
     parser = argparse.ArgumentParser(description="calibrate from photos of the screen tag grid")
     parser.add_argument("--photos", type=Path, required=True, help="folder of calibration photos")
+    parser.add_argument("--convention", nargs=2, type=int, default=None,
+                        metavar=("ROTATION", "MIRROR"),
+                        help="corner convention for the tag grid, as resolved by "
+                             "tools/eval_photos.py. The handedness trap lives here, "
+                             "not in the marker map.")
     parser.add_argument("--min-markers", type=int, default=None,
                         help=f"markers a view must show to be used (default "
                              f"{MIN_MARKERS_PER_VIEW}). Lower it for a small grid: an "
@@ -328,7 +333,7 @@ def parse_args(argv=None):
     parser.add_argument("--square-mm", type=float, default=None,
                         help="chessboard square size, as printed by tools/chessboard.py. "
                              "Scales the tvecs only; the intrinsics are unaffected.")
-    parser.add_argument("--markers", type=Path, default=Path("config/markers_screen.json"),
+    parser.add_argument("--markers", type=Path, default=None,
                         help="marker map the photos show")
     parser.add_argument("--hall", type=Path, default=Path("config/hall.json"),
                         help="source of the dictionary and detector settings")
@@ -365,13 +370,17 @@ def main(argv=None) -> int:
         object_points, image_points, image_size, used, skipped = collect_chessboard_views(
             paths, pattern, args.square_mm / 1000.0)
     else:
-        marker_map = starnav.load_marker_map(args.markers)
+        markers_path = args.markers or Path(hall.get("markers", "config/markers.json"))
+        marker_map = starnav.load_marker_map(markers_path)
         detection_cfg = dict(hall["detection"])
         if args.refine_win:
             detection_cfg["corner_refine_win_size"] = args.refine_win
         detector = starnav.make_detector(detection_cfg)
-        offsets = starnav.corner_offsets(marker_map["tag_size_m"] / 2.0)
-        target = f"tag grid from {args.markers}"
+        convention = args.convention or hall.get("pose", {}).get("convention", (0, 0))
+        print(f"convention   : rotation {convention[0]}, mirror {bool(convention[1])}")
+        offsets = starnav.corner_offsets(marker_map["tag_size_m"] / 2.0,
+                                         int(convention[0]), bool(convention[1]))
+        target = f"tag grid from {markers_path}"
         object_points, image_points, image_size, used, skipped = collect_views(
             paths, detector, marker_map, offsets, args.min_markers)
 
@@ -390,8 +399,14 @@ def main(argv=None) -> int:
     flags = 0 if args.free_k3 else DEFAULT_FLAGS
     if args.rational:
         flags |= cv2.CALIB_RATIONAL_MODEL
-    rms, camera_matrix, dist_coeffs, rvecs, tvecs = cv2.calibrateCamera(
+    # Extended, because the point estimate alone is not a result. The
+    # standard deviations say how well each parameter is actually pinned down
+    # by this set of views, and the principal point in particular is what
+    # carries into lateral position error.
+    (rms, camera_matrix, dist_coeffs, rvecs, tvecs,
+     std_intrinsics, _std_extrinsics, _per_view) = cv2.calibrateCameraExtended(
         object_points, image_points, image_size, None, None, flags=flags)
+    std = np.asarray(std_intrinsics).ravel()
 
     errors = per_view_errors(object_points, image_points, rvecs, tvecs,
                              camera_matrix, dist_coeffs)
@@ -428,11 +443,34 @@ def main(argv=None) -> int:
     print(f"\nRMS reprojection : {rms:.4f} px   (pooled over all corners)")
     print(f"per-view mean    : median {np.median(errors):.3f}, worst {errors.max():.3f} px "
           f"({used[int(np.argmax(errors))][0]}), mean of views {pooled_mean:.3f}")
-    print(f"focal length     : fx {focal_x:.1f}, fy {focal_y:.1f} px  "
+    # calibrateCameraExtended orders the deviations fx, fy, cx, cy, then the
+    # distortion terms.
+    sd_fx, sd_fy, sd_cx, sd_cy = (float(std[i]) if i < std.size else float("nan")
+                                  for i in range(4))
+    centre_x, centre_y = camera_matrix[0, 2], camera_matrix[1, 2]
+    print(f"focal length     : fx {focal_x:.1f} +/- {sd_fx:.1f}, "
+          f"fy {focal_y:.1f} +/- {sd_fy:.1f} px  "
           f"(aspect {focal_y / focal_x:.4f}, HFOV {hfov:.1f} deg)")
-    print(f"principal point  : {camera_matrix[0, 2]:.1f}, {camera_matrix[1, 2]:.1f} "
+    print(f"principal point  : cx {centre_x:.1f} +/- {sd_cx:.1f}, "
+          f"cy {centre_y:.1f} +/- {sd_cy:.1f} px")
+    print(f"                   offset from centre: "
+          f"{centre_x - image_size[0] / 2:+.1f}, {centre_y - image_size[1] / 2:+.1f} px "
           f"(centre is {image_size[0] / 2:.0f}, {image_size[1] / 2:.0f})")
+
+    # What those uncertainties cost, in the units the task is graded in. A
+    # principal-point error tilts the whole bundle of rays, so it lands in
+    # LATERAL position; a focal-length error rescales depth, so it lands in
+    # RANGE. They do not trade places, which is why both are quoted.
+    plane_range = marker_map["ceiling_height_m"] if not args.chessboard else None
+    if plane_range:
+        lateral_mm = 1000.0 * plane_range * max(sd_cx, sd_cy) / focal_x
+        range_mm = 1000.0 * plane_range * sd_fx / focal_x
+        print(f"                   -> at {plane_range:.2f} m that is "
+              f"~{lateral_mm:.1f} mm of lateral uncertainty from cx/cy, and "
+              f"~{range_mm:.1f} mm of range uncertainty from fx")
     print(f"distortion       : {np.array2string(dist_coeffs.ravel(), precision=4)}")
+    if std.size >= 9:
+        print(f"                   +/- {np.array2string(std[4:9], precision=4)}")
     print(f"view tilt spread : {tilts.min():.0f} to {tilts.max():.0f} deg")
 
     if rms <= MAX_ACCEPTABLE_RMS_PX:

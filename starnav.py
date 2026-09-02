@@ -104,14 +104,24 @@ def load_marker_map(path: Path) -> dict:
         if key not in raw:
             raise ValueError(f"{path}: missing required key '{key}'")
 
-    positions = {}
-    for marker_id, xy in raw["markers"].items():
-        if len(xy) != 2:
+    # A marker is [x, y], optionally [x, y, z] and optionally [x, y, z, yaw].
+    # The plain form keeps every tag on the nominal plane facing square to the
+    # axes, which is what a tape-measured survey gives you. The longer forms
+    # come from tools/refine_map.py, which solves each tag's real height and
+    # its own rotation - printed sheets taped up by hand are neither exactly
+    # coplanar nor exactly square, and pretending otherwise puts that error
+    # into every pose.
+    positions, heights, yaws = {}, {}, {}
+    for marker_id, entry in raw["markers"].items():
+        if not 2 <= len(entry) <= 4:
             raise ValueError(
-                f"{path}: marker {marker_id} must be [x, y] in metres "
-                f"(Z is fixed at ceiling_height_m for every marker)"
+                f"{path}: marker {marker_id} must be [x, y], [x, y, z] or "
+                f"[x, y, z, yaw_rad] in metres/radians"
             )
-        positions[int(marker_id)] = (float(xy[0]), float(xy[1]))
+        key = int(marker_id)
+        positions[key] = (float(entry[0]), float(entry[1]))
+        heights[key] = float(entry[2]) if len(entry) > 2 else None
+        yaws[key] = float(entry[3]) if len(entry) > 3 else 0.0
 
     return {
         "tag_size_m": float(raw["tag_size_m"]),
@@ -121,6 +131,10 @@ def load_marker_map(path: Path) -> dict:
         # separate number and is deliberately not folded into acc_est_m.
         "survey_uncertainty_m": float(raw.get("survey_uncertainty_m", 0.0)),
         "markers": positions,
+        # None means "use ceiling_height_m", resolved at use so a map written
+        # before refinement keeps behaving exactly as it did.
+        "heights": heights,
+        "yaws": yaws,
     }
 
 
@@ -387,14 +401,23 @@ def build_correspondences(detections, marker_map: dict, offsets: np.ndarray):
     each other* are known, so their combined outline constrains camera
     orientation far more tightly than any single tag's four corners can.
     """
-    height = marker_map["ceiling_height_m"]
+    nominal = marker_map["ceiling_height_m"]
+    heights = marker_map.get("heights", {})
+    yaws = marker_map.get("yaws", {})
     object_points, image_points, used_ids = [], [], []
     for marker_id, corners in detections:
         centre_x, centre_y = marker_map["markers"][marker_id]
+        height = heights.get(marker_id) or nominal
+        yaw = yaws.get(marker_id, 0.0)
+        cos_yaw, sin_yaw = math.cos(yaw), math.sin(yaw)
         for (dx, dy), image_corner in zip(offsets, corners.reshape(4, 2)):
-            # Every marker lies on the same plane, Z = ceiling_height. That
-            # shared plane is the planar structure the solver exploits.
-            object_points.append((centre_x + dx, centre_y + dy, height))
+            # Markers share a plane at Z = ceiling_height, which is the planar
+            # structure the solver exploits. A refined map may put an
+            # individual tag slightly off that plane, and turned slightly
+            # within it; both are applied here rather than assumed away.
+            object_points.append((centre_x + dx * cos_yaw - dy * sin_yaw,
+                                  centre_y + dx * sin_yaw + dy * cos_yaw,
+                                  height))
             image_points.append(image_corner)
         used_ids.append(marker_id)
     return (np.array(object_points, dtype=np.float64),
@@ -456,8 +479,9 @@ def solve_single(marker_id: int, corners, marker_map: dict,
     rotation_local_to_camera, _ = cv2.Rodrigues(rvec)
     rotation_local_to_world = np.diag([1.0, -1.0, -1.0])
     centre_x, centre_y = marker_map["markers"][marker_id]
+    height = marker_map.get("heights", {}).get(marker_id) or marker_map["ceiling_height_m"]
     translation_local_to_world = np.array(
-        [[centre_x], [centre_y], [marker_map["ceiling_height_m"]]], dtype=np.float64)
+        [[centre_x], [centre_y], [height]], dtype=np.float64)
 
     rotation_world_to_camera = rotation_local_to_camera @ rotation_local_to_world.T
     translation_world_to_camera = tvec - rotation_world_to_camera @ translation_local_to_world
@@ -663,33 +687,62 @@ class FpsMeter:
         return (len(self._stamps) - 1) / span if span > 0 else 0.0
 
 
-def draw_detections(frame, detections, color_bgr) -> None:
-    """Outline each detected marker and label it with its ID."""
+# The viz text sizes in config are tuned for a roughly 700 px wide canvas.
+# Anything wider scales up from there, so a 4 K camera frame is annotated at
+# 4 K and still reads correctly once the recording is scaled down.
+TEXT_REFERENCE_WIDTH_PX = 700
+
+
+def annotation_scale(frame) -> float:
+    return max(1.0, frame.shape[1] / TEXT_REFERENCE_WIDTH_PX)
+
+
+def draw_detections(frame, detections, color_bgr, scale: float = 1.0) -> None:
+    """Outline each detected marker and label it with its ID.
+
+    drawDetectedMarkers draws its own ID text at a fixed size, which is
+    illegible on a 4 K frame, so the outline is drawn without it and the label
+    is written separately at a size that follows the frame.
+    """
     if not detections:
         return
-    # drawDetectedMarkers wants the shapes detectMarkers produced, and writes
-    # the ID next to each tag for us.
     corners = [marker_corners for _, marker_corners in detections]
-    ids = np.array([[marker_id] for marker_id, _ in detections])
-    cv2.aruco.drawDetectedMarkers(frame, corners, ids, tuple(color_bgr))
+    cv2.aruco.drawDetectedMarkers(frame, corners, None, tuple(color_bgr))
+
+    font_scale = 0.6 * scale
+    thickness = max(1, int(round(1.6 * scale)))
+    for marker_id, marker_corners in detections:
+        points = marker_corners.reshape(4, 2)
+        # Top-left corner as ArUco reports it, nudged clear of the outline.
+        at = (int(points[0][0]), int(points[0][1] - 6 * scale))
+        cv2.putText(frame, str(marker_id), at, cv2.FONT_HERSHEY_SIMPLEX,
+                    font_scale, (0, 0, 0), thickness * 3, cv2.LINE_AA)
+        cv2.putText(frame, str(marker_id), at, cv2.FONT_HERSHEY_SIMPLEX,
+                    font_scale, tuple(color_bgr), thickness, cv2.LINE_AA)
 
 
-def draw_text_block(frame, lines, viz_cfg) -> None:
+def draw_text_block(frame, lines, viz_cfg, scale: float = 1.0) -> None:
     """Overlay status text, drawn twice for legibility.
 
     A ceiling view is mostly bright, so plain white text disappears against it.
     A dark pass underneath is cheaper than compositing a background panel.
+
+    `scale` follows the frame width: the config sizes suit the map canvas, and
+    a 4 K camera frame needs every dimension multiplied or the caption is
+    unreadable in the recording.
     """
-    x, y = viz_cfg["text_origin_px"]
-    scale = viz_cfg["font_scale"]
-    step = viz_cfg["text_line_height_px"]
+    x = int(viz_cfg["text_origin_px"][0] * scale)
+    y = int(viz_cfg["text_origin_px"][1] * scale)
+    font_scale = viz_cfg["font_scale"] * scale
+    step = int(viz_cfg["text_line_height_px"] * scale)
+    thickness = max(1, int(round(scale)))
     font = cv2.FONT_HERSHEY_SIMPLEX
     for index, line in enumerate(lines):
         origin = (x, y + index * step)
-        cv2.putText(frame, line, origin, font, scale,
-                    tuple(viz_cfg["text_shadow_bgr"]), 3, cv2.LINE_AA)
-        cv2.putText(frame, line, origin, font, scale,
-                    tuple(viz_cfg["text_color_bgr"]), 1, cv2.LINE_AA)
+        cv2.putText(frame, line, origin, font, font_scale,
+                    tuple(viz_cfg["text_shadow_bgr"]), thickness * 3, cv2.LINE_AA)
+        cv2.putText(frame, line, origin, font, font_scale,
+                    tuple(viz_cfg["text_color_bgr"]), thickness, cv2.LINE_AA)
 
 
 # Hall map  (build stage 4)
@@ -717,6 +770,7 @@ class HallMap:
         self.markers = marker_map["markers"]
 
         self.cfg = viz_cfg
+        self.y_down = bool(viz_cfg.get("map_y_down", False))
         self.trail = deque(maxlen=viz_cfg["map_trail_len"])
         # The status text gets its own band at the top rather than being drawn
         # over the plot. Painting it on top hid whichever markers happened to
@@ -775,14 +829,21 @@ class HallMap:
     def to_px(self, x: float, y: float):
         """World metres -> map pixels.
 
-        World +Y is "forward" and is drawn up the image, but image rows
-        increase downward, hence the subtraction rather than a second scale.
-        Dropping that flip mirrors the map vertically and reads exactly like a
-        sign error in the solver, which is the wrong place to go looking.
+        Which way +Y is drawn is a property of the world frame, not a taste.
+        The solver needs a right-handed frame, and with X right and Z running
+        from the camera into the marker plane that forces Y DOWNWARD - so on a
+        wall or ceiling rig the surveyed "up" direction is negative Y. Drawing
+        such a map with +Y up puts the markers in the right place but sends the
+        moving dot the wrong way, which is exactly as confusing as it sounds.
+
+        viz.map_y_down says the frame is the Y-down kind, so larger Y draws
+        lower and the picture matches what the camera physically did.
         """
-        return (int(round((x - self.origin[0]) * self.scale)),
-                int(round(self.header_px + self.height_px
-                          - (y - self.origin[1]) * self.scale)))
+        column = int(round((x - self.origin[0]) * self.scale))
+        offset = (y - self.origin[1]) * self.scale
+        if self.y_down:
+            return (column, int(round(self.header_px + offset)))
+        return (column, int(round(self.header_px + self.height_px - offset)))
 
     def render(self, pose, detected_ids, frame_index: int, fps_value: float):
         cfg = self.cfg
@@ -828,14 +889,18 @@ class HallMap:
             # length would vanish on one rig and dominate the other. The minus
             # on sin is the same image-Y-down flip as to_px, in pixel space.
             angle = math.radians(pose["yaw_deg"])
+            rise = cfg["map_heading_px"] * math.sin(angle)
             tip = (int(round(centre[0] + cfg["map_heading_px"] * math.cos(angle))),
-                   int(round(centre[1] - cfg["map_heading_px"] * math.sin(angle))))
+                   int(round(centre[1] + (rise if self.y_down else -rise))))
             cv2.line(canvas, centre, tip, tuple(cfg["map_pose_bgr"]), 2, cv2.LINE_AA)
 
             lines.append(f"x {pose['x']:+.3f}  y {pose['y']:+.3f}  yaw {pose['yaw_deg']:+6.1f}")
             lines.append(f"markers {pose['n_markers']}: {pose['ids']}")
-            lines.append(f"reproj {pose['reproj_px']:.2f} px   "
-                         f"acc~{pose['acc_est_m'] * 1000:.1f} mm"
+            # Reprojection error is a fit statistic, not an accuracy: on this rig
+            # it mostly reports how well the marker survey is known. It stays in
+            # logs/track.csv, where the report needs it, and off the display,
+            # where it invites being read as a position error.
+            lines.append(f"accuracy estimate ~{pose['acc_est_m'] * 1000:.1f} mm"
                          + ("   SINGLE MARKER" if pose["single_marker"] else ""))
         # A rule under the reserved band, so the caption reads as a header
         # rather than as text floating over the plot.
@@ -912,28 +977,42 @@ def make_publisher(udp_cfg: dict):
     return send
 
 
-def open_visualization_writer(output_cfg: dict, size, fps: float):
-    """Start recording the hall map to a timestamped video, or return None.
+def open_recording(output_cfg: dict, name: str, stamp: str, size, fps: float):
+    """Start a timestamped recording, or return (None, None).
 
-    The demonstration has to show the map tracking the camera, so the map is
-    recorded here rather than left to external screen-capture software: that
-    way the recording is exactly the frames the solver produced, at the source's
-    own frame rate, with nothing dropped by a capture tool.
+    The demonstration has to show the map tracking the camera, so both views are
+    recorded here rather than left to external screen-capture software: the
+    files are then exactly the frames the solver produced, at the source's own
+    frame rate, with nothing dropped by a capture tool. Both share one timestamp
+    so the pair is obvious when they are cut side by side.
 
     A missing codec must not take the run down with it - the position output is
-    the point and the video is a convenience - so a writer that will not open is
-    reported and skipped.
+    the point and the videos are a convenience - so a writer that will not open
+    is reported and skipped.
     """
-    if not output_cfg.get("save_visualization", True):
-        return None, None
     folder = Path(output_cfg.get("visualization_dir", "logs"))
     folder.mkdir(parents=True, exist_ok=True)
-    path = folder / f"visualization_{time.strftime('%Y%m%d_%H%M%S')}.mp4"
+    path = folder / f"{name}_{stamp}.mp4"
     writer = cv2.VideoWriter(str(path), cv2.VideoWriter_fourcc(*"mp4v"), fps, size)
     if not writer.isOpened():
-        print(f"visualization: could not open {path} for writing (codec?) - not recording")
+        print(f"could not open {path} for writing (codec?) - not recording")
         return None, None
     return writer, path
+
+
+def fit_width(frame, max_width: int):
+    """Shrink a frame to max_width, preserving aspect. Untouched if smaller.
+
+    The camera view is whatever the source hands over - 4K on a phone - and a
+    4K annotated recording is large, slow to write, and no more legible in a
+    demonstration than a 1280-wide one.
+    """
+    height, width = frame.shape[:2]
+    if width <= max_width:
+        return frame
+    scale = max_width / width
+    return cv2.resize(frame, (max_width, int(round(height * scale))),
+                      interpolation=cv2.INTER_AREA)
 
 
 # --------------------------------------------------------------------------
@@ -959,9 +1038,10 @@ def parse_args(argv=None):
     parser.add_argument("--assume-level", type=int, choices=(0, 1), default=None,
                         help="override hall.json pose.assume_level. 1 constrains the "
                              "solve to 4 DOF for a level mount; 0 uses full solvePnP.")
-    parser.add_argument("--convention", nargs=2, type=int, default=(0, 0),
+    parser.add_argument("--convention", nargs=2, type=int, default=None,
                         metavar=("ROTATION", "MIRROR"),
-                        help="corner convention, as resolved by tools/eval_photos.py")
+                        help="corner convention, as resolved by tools/eval_photos.py. "
+                             "Defaults to hall.json's pose.convention.")
     return parser.parse_args(argv)
 
 
@@ -991,13 +1071,19 @@ def main(argv=None) -> int:
     csv_handle, csv_writer = open_csv(csv_path)
     publish = make_publisher(output_cfg["udp"])
     viz_writer = viz_path = None
+    cam_writer = cam_path = None
+    record_stamp = time.strftime("%Y%m%d_%H%M%S")
 
     # Pose needs intrinsics. Rather than substitute a guessed focal length -
     # which would produce plausible-looking positions that are wrong by
     # whatever fraction the guess was off - the loop degrades to stage 1.
     camera_matrix = dist_coeffs = calib_size = None
+    # The corner-to-world mapping has a handedness trap, and it belongs HERE
+    # rather than in the marker map: mirroring the map fixes the geometry too,
+    # but it silently relabels which end of the hall is y = 0.
+    convention = args.convention or pose_cfg.get("convention", (0, 0))
     offsets = corner_offsets(marker_map["tag_size_m"] / 2.0,
-                             int(args.convention[0]), bool(args.convention[1]))
+                             int(convention[0]), bool(convention[1]))
     if args.calib.exists():
         camera_matrix, dist_coeffs, calib_size = load_calibration(args.calib)
         captured_at = f" (captured at {calib_size[0]}x{calib_size[1]})" if calib_size else ""
@@ -1020,6 +1106,7 @@ def main(argv=None) -> int:
     udp_cfg = output_cfg["udp"]
     print(f"udp feed    : {udp_cfg['host']}:{udp_cfg['port']}"
           if udp_cfg.get("enabled", True) else "udp feed    : disabled")
+    print(f"convention  : rotation {convention[0]}, mirror {bool(convention[1])}")
     print(f"pose model  : {'4-DOF, MOUNT ASSUMED LEVEL' if assume_level else '6-DOF solvePnP'}")
     print("keys        : q/ESC quit, space pause, s snapshot")
     if source.is_stills:
@@ -1064,8 +1151,9 @@ def main(argv=None) -> int:
                 corners, ids, _rejected = detector.detectMarkers(gray)
                 known, unknown = split_known_unknown(corners, ids, known_ids)
 
-                draw_detections(frame, known, viz_cfg["known_color_bgr"])
-                draw_detections(frame, unknown, viz_cfg["unknown_color_bgr"])
+                overlay_scale = annotation_scale(frame)
+                draw_detections(frame, known, viz_cfg["known_color_bgr"], overlay_scale)
+                draw_detections(frame, unknown, viz_cfg["unknown_color_bgr"], overlay_scale)
 
                 lines = [
                     f"frame {frame_index}   fps {fps.value():5.1f}",
@@ -1081,13 +1169,15 @@ def main(argv=None) -> int:
                     else:
                         lines.append(f"x {pose['x']:+.3f}  y {pose['y']:+.3f}  "
                                      f"yaw {pose['yaw_deg']:+6.1f}")
-                        lines.append(f"reproj {pose['reproj_px']:.2f} px   "
-                                     f"acc~{pose['acc_est_m'] * 1000:.0f} mm"
+                        lines.append(f"tilt {pose['tilt_deg']:5.2f} deg   "
+                                     f"range {abs(marker_map['ceiling_height_m'] - pose['z']):.3f} m")
+                        lines.append(f"accuracy estimate ~"
+                                     f"{pose['acc_est_m'] * 1000:.1f} mm"
                                      + ("   SINGLE MARKER - low quality"
                                         if pose["single_marker"] else ""))
                 else:
                     lines.append("no calib.npz: detection only, no pose")
-                draw_text_block(frame, lines, viz_cfg)
+                draw_text_block(frame, lines, viz_cfg, overlay_scale)
 
                 if source.is_stills:
                     name = source.frame_name[:23]
@@ -1104,17 +1194,28 @@ def main(argv=None) -> int:
                 map_canvas = hall_map.render(pose, [i for i, _ in known],
                                              frame_index, fps.value())
                 cv2.imshow(viz_cfg["map_window"], map_canvas)
-                if viz_writer is None and frame_index == 0:
-                    # Opened on the first frame because the canvas size is not
-                    # known until the map has been laid out.
-                    height, width = map_canvas.shape[:2]
-                    viz_writer, viz_path = open_visualization_writer(
-                        output_cfg, (width, height),
-                        source.fps or output_cfg.get("video_fps", 30.0))
-                    if viz_path:
-                        print(f"recording map -> {viz_path}")
+
+                cam_canvas = fit_width(frame, output_cfg.get("camera_video_width", 1280))
+                if frame_index == 0:
+                    # Opened on the first frame: neither canvas size is known
+                    # until there is a frame and a laid-out map.
+                    rate = source.fps or output_cfg.get("video_fps", 30.0)
+                    if output_cfg.get("save_visualization", True):
+                        height, width = map_canvas.shape[:2]
+                        viz_writer, viz_path = open_recording(
+                            output_cfg, "visualization", record_stamp, (width, height), rate)
+                        if viz_path:
+                            print(f"recording map    -> {viz_path}")
+                    if output_cfg.get("save_camera_video", True):
+                        height, width = cam_canvas.shape[:2]
+                        cam_writer, cam_path = open_recording(
+                            output_cfg, "camera", record_stamp, (width, height), rate)
+                        if cam_path:
+                            print(f"recording camera -> {cam_path} ({width}x{height})")
                 if viz_writer is not None:
                     viz_writer.write(map_canvas)
+                if cam_writer is not None:
+                    cam_writer.write(cam_canvas)
 
                 # Log before publishing: the CSV is the record the report is
                 # written from, and a send that raises must not cost the row.
@@ -1134,9 +1235,10 @@ def main(argv=None) -> int:
                 cv2.imwrite(str(path), frame)
                 print(f"saved {path}")
     finally:
-        if viz_writer is not None:
-            viz_writer.release()
-            print(f"wrote {viz_path}")
+        for writer, written in ((viz_writer, viz_path), (cam_writer, cam_path)):
+            if writer is not None:
+                writer.release()
+                print(f"wrote {written}")
         csv_handle.close()
         source.release()
         cv2.destroyAllWindows()

@@ -1,0 +1,849 @@
+<title>Ceiling to Coordinate</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&family=IBM+Plex+Sans+Condensed:wght@600;700&family=IBM+Plex+Sans:wght@400;500;600&display=swap">
+
+<style>
+:root {
+  --ground:  #F1F2F5;
+  --surface: #FFFFFF;
+  --sunk:    #E7E9ED;
+  --ink:     #111318;
+  --muted:   #59606B;
+  --faint:   #8B929C;
+  --line:    #D5D9DF;
+  --accent:  #C7620A;
+  --signal:  #0D7A8B;
+  --survey:  #2C7A4D;
+  --warn:    #B24238;
+
+  --sans: "IBM Plex Sans", ui-sans-serif, system-ui, sans-serif;
+  --cond: "IBM Plex Sans Condensed", "IBM Plex Sans", ui-sans-serif, system-ui, sans-serif;
+  --mono: "IBM Plex Mono", ui-monospace, "SFMono-Regular", Menlo, monospace;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --ground:  #131519;
+    --surface: #1C1F24;
+    --sunk:    #23272D;
+    --ink:     #E7E9ED;
+    --muted:   #959DA8;
+    --faint:   #6E7681;
+    --line:    #2C313A;
+    --accent:  #FF9333;
+    --signal:  #3CC9DA;
+    --survey:  #55C285;
+    --warn:    #EB6C5F;
+  }
+}
+:root[data-theme="dark"] {
+  --ground:  #131519;
+  --surface: #1C1F24;
+  --sunk:    #23272D;
+  --ink:     #E7E9ED;
+  --muted:   #959DA8;
+  --faint:   #6E7681;
+  --line:    #2C313A;
+  --accent:  #FF9333;
+  --signal:  #3CC9DA;
+  --survey:  #55C285;
+  --warn:    #EB6C5F;
+}
+
+body {
+  background: var(--ground);
+  color: var(--ink);
+  font-family: var(--sans);
+  font-size: 16px;
+  line-height: 1.65;
+  -webkit-font-smoothing: antialiased;
+}
+.wrap { max-width: 1060px; margin: 0 auto; padding: 0 28px 110px; }
+
+/* ---------- masthead ---------- */
+.masthead { padding: 72px 0 40px; display: grid; gap: 18px; }
+.kicker {
+  font-family: var(--mono); font-size: 11.5px; font-weight: 500;
+  letter-spacing: 0.16em; text-transform: uppercase; color: var(--accent);
+}
+h1 {
+  font-family: var(--cond); font-weight: 700;
+  font-size: clamp(2.3rem, 6vw, 3.5rem); line-height: 1.02;
+  letter-spacing: -0.015em; text-wrap: balance; max-width: 18ch;
+}
+.lede { max-width: 60ch; font-size: 1.12rem; color: var(--muted); }
+.lede strong { color: var(--ink); font-weight: 600; }
+
+.readout {
+  margin-top: 12px; border: 1px solid var(--line); background: var(--surface);
+  display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+}
+.readout div { padding: 13px 16px; border-right: 1px solid var(--line); }
+.readout div:last-child { border-right: 0; }
+.readout dt {
+  font-family: var(--mono); font-size: 10.5px; letter-spacing: 0.09em;
+  text-transform: uppercase; color: var(--faint);
+}
+.readout dd {
+  font-family: var(--mono); font-size: 14px; font-weight: 500;
+  margin-top: 3px; font-variant-numeric: tabular-nums;
+}
+
+/* ---------- stages ---------- */
+.stage { display: grid; gap: 18px; padding: 54px 0; border-top: 1px solid var(--line); }
+.stage > p, .stage > h2, .stage > h3, .stage > ul, .stage > .note { max-width: 66ch; }
+.eyebrow {
+  font-family: var(--mono); font-size: 11.5px; font-weight: 500;
+  letter-spacing: 0.14em; text-transform: uppercase; color: var(--muted);
+  display: flex; align-items: baseline; gap: 12px;
+}
+.eyebrow .num {
+  font-weight: 600; color: var(--accent);
+  border: 1px solid var(--accent); padding: 1px 7px; letter-spacing: 0.06em;
+}
+h2 {
+  font-family: var(--cond); font-weight: 600; font-size: 1.75rem;
+  line-height: 1.14; letter-spacing: -0.005em; text-wrap: balance;
+}
+h3 {
+  font-family: var(--sans); font-weight: 600; font-size: 1rem;
+  letter-spacing: 0.005em; margin-top: 6px;
+}
+.stage ul { display: grid; gap: 8px; padding-left: 1.15rem; }
+.stage li { padding-left: 3px; }
+code {
+  font-family: var(--mono); font-size: 0.885em;
+  background: var(--sunk); padding: 1px 5px; border-radius: 2px;
+}
+
+.io {
+  display: grid; grid-template-columns: max-content 1fr; gap: 2px 0;
+  border: 1px solid var(--line); background: var(--line);
+  font-family: var(--mono); font-size: 12.5px; overflow-x: auto;
+}
+.io dt {
+  background: var(--sunk); color: var(--faint); padding: 9px 14px;
+  letter-spacing: 0.1em; text-transform: uppercase; font-size: 10.5px;
+  display: flex; align-items: center;
+}
+.io dd { background: var(--surface); padding: 9px 14px; white-space: nowrap; }
+
+figure { display: grid; gap: 12px; margin: 12px 0 4px; }
+.frame {
+  border: 1px solid var(--line); background: var(--surface);
+  padding: 22px 18px; overflow-x: auto;
+}
+.frame svg { display: block; width: 100%; min-width: 640px; height: auto; }
+figcaption { font-size: 13.5px; color: var(--muted); max-width: 74ch; }
+figcaption b { color: var(--ink); font-weight: 600; }
+
+.tablewrap { overflow-x: auto; border: 1px solid var(--line); background: var(--surface); }
+table { border-collapse: collapse; width: 100%; font-size: 13.5px; min-width: 580px; }
+th, td { text-align: left; padding: 10px 15px; border-bottom: 1px solid var(--line); vertical-align: top; }
+thead th {
+  font-family: var(--mono); font-size: 10.5px; letter-spacing: 0.1em;
+  text-transform: uppercase; color: var(--faint); background: var(--sunk);
+  white-space: nowrap;
+}
+tbody tr:last-child td { border-bottom: 0; }
+td.m, th.m { font-family: var(--mono); font-size: 12.5px; white-space: nowrap; font-variant-numeric: tabular-nums; }
+.swatch { display: inline-block; width: 11px; height: 11px; border: 1px solid var(--line); vertical-align: -1px; margin-right: 7px; }
+
+pre {
+  font-family: var(--mono); font-size: 12.5px; line-height: 1.6;
+  background: var(--surface); border: 1px solid var(--line);
+  padding: 16px 18px; overflow-x: auto;
+}
+pre .k { color: var(--signal); }
+pre .v { color: var(--accent); }
+
+.note {
+  border-left: 2px solid var(--accent); padding: 4px 0 4px 16px;
+  font-size: 14.5px; color: var(--muted);
+}
+.note b { color: var(--ink); font-weight: 600; }
+
+footer {
+  border-top: 1px solid var(--line); margin-top: 24px; padding-top: 26px;
+  font-family: var(--mono); font-size: 12px; color: var(--faint);
+  display: grid; gap: 6px;
+}
+
+@media (prefers-reduced-motion: no-preference) {
+  html { scroll-behavior: smooth; }
+}
+</style>
+
+<div class="wrap">
+
+<header class="masthead">
+  <p class="kicker">Star Navigation &middot; v1 &middot; per-frame pipeline</p>
+  <h1>Ceiling to Coordinate</h1>
+  <p class="lede">One upward-facing camera, a ceiling of ArUco tags at surveyed positions, and
+  <strong>one <code>solvePnP</code> call per frame</strong>. This is what happens between a raw
+  BGR frame and an absolute X/Y position in the hall frame &mdash; and what the 2D map window is
+  actually drawing.</p>
+
+  <dl class="readout">
+    <div><dt>Tag size</dt><dd>0.1435 m</dd></div>
+    <div><dt>Marker plane</dt><dd>Z = 2.400 m</dd></div>
+    <div><dt>Dictionary</dt><dd>DICT_4X4_50</dd></div>
+    <div><dt>Mapped tags</dt><dd>9 &nbsp;(0&ndash;8)</dd></div>
+    <div><dt>Capture</dt><dd>1280 &times; 720</dd></div>
+    <div><dt>Survey &sigma;</dt><dd>&plusmn;8 mm</dd></div>
+  </dl>
+</header>
+
+<section class="stage">
+  <p class="eyebrow"><span class="num">00</span> The whole loop</p>
+  <h2>Eight stages, once per frame, with no state carried between them</h2>
+  <p>There is no filter, no tracker and no prediction in v1. Every frame is solved from scratch,
+  so every wobble in the map is real measurement noise rather than a smoother&rsquo;s lag. The only
+  thing that survives across frames is the drawn trail &mdash; and that is display, not estimation.</p>
+
+  <figure>
+    <div class="frame">
+      <svg viewBox="0 0 900 930" role="img" aria-label="Per-frame pipeline: frame source, greyscale conversion, marker detection, known and unknown split, correspondence build, solvePnP, pose inversion, quality metrics, then five output sinks">
+        <defs>
+          <marker id="arrA" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+            <path d="M 0 0 L 10 5 L 0 10 z" fill="currentColor"/>
+          </marker>
+          <marker id="arrAm" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+            <path d="M 0 0 L 10 5 L 0 10 z" fill="currentColor" opacity="0.45"/>
+          </marker>
+        </defs>
+        <g fill="currentColor" font-family="IBM Plex Mono, monospace">
+
+          <g opacity="0.62" font-size="11">
+            <rect x="24" y="34" width="196" height="48" fill="none" stroke="currentColor" stroke-dasharray="3 3"/>
+            <text x="36" y="53">config/hall.json</text><text x="36" y="70" opacity="0.75">source, camera locks</text>
+            <rect x="24" y="226" width="196" height="48" fill="none" stroke="currentColor" stroke-dasharray="3 3"/>
+            <text x="36" y="245">detection cfg</text><text x="36" y="262" opacity="0.75">dictionary, subpix</text>
+            <rect x="24" y="370" width="196" height="48" fill="none" stroke="currentColor" stroke-dasharray="3 3"/>
+            <text x="36" y="389">config/markers.json</text><text x="36" y="406" opacity="0.75">id &#8594; x, y [, z, yaw]</text>
+            <rect x="24" y="514" width="196" height="48" fill="none" stroke="currentColor" stroke-dasharray="3 3"/>
+            <text x="36" y="533">calib.npz</text><text x="36" y="550" opacity="0.75">K, dist_coeffs</text>
+          </g>
+          <g stroke="currentColor" opacity="0.45" marker-end="url(#arrAm)" fill="none">
+            <path d="M 220 58 L 300 58"/>
+            <path d="M 220 250 L 300 250"/>
+            <path d="M 220 394 L 262 394 L 262 442 L 300 442"/>
+            <path d="M 220 538 L 300 538"/>
+          </g>
+
+          <g stroke="currentColor" stroke-width="1.25" fill="none">
+            <rect x="300" y="30" width="300" height="56"/>
+            <rect x="300" y="126" width="300" height="56"/>
+            <rect x="300" y="222" width="300" height="56"/>
+            <rect x="300" y="318" width="300" height="56"/>
+            <rect x="300" y="414" width="300" height="56"/>
+            <rect x="300" y="510" width="300" height="56" stroke-width="2.25" stroke="#C7620A"/>
+            <rect x="300" y="606" width="300" height="56"/>
+            <rect x="300" y="702" width="300" height="56"/>
+          </g>
+          <g font-size="13" font-weight="500" text-anchor="middle">
+            <text x="450" y="54">FrameSource.read()</text>
+            <text x="450" y="150">cv2.cvtColor &#8594; GRAY</text>
+            <text x="450" y="246">detector.detectMarkers()</text>
+            <text x="450" y="342">split_known_unknown()</text>
+            <text x="450" y="438">build_correspondences()</text>
+            <text x="450" y="534" fill="#C7620A" font-weight="600">cv2.solvePnP</text>
+            <text x="450" y="630">C = &#8722;R&#7488; &#183; t</text>
+            <text x="450" y="726">quality metrics</text>
+          </g>
+          <g font-size="10.5" text-anchor="middle" opacity="0.62">
+            <text x="450" y="71">webcam &#183; video file &#183; stills folder</text>
+            <text x="450" y="167">colour frame kept for display only</text>
+            <text x="450" y="263">sub-pixel corner refinement</text>
+            <text x="450" y="359">drop every ID not in the map</text>
+            <text x="450" y="455">4N object points, 4N image points</text>
+            <text x="450" y="551" fill="#C7620A">one fused solve, never N averaged</text>
+            <text x="450" y="647">camera in world, not world in camera</text>
+            <text x="450" y="743">reproj_px, tilt_deg, acc_est_m</text>
+          </g>
+
+          <g stroke="currentColor" stroke-width="1.25" marker-end="url(#arrA)" fill="none">
+            <path d="M 450 86 L 450 126"/>
+            <path d="M 450 182 L 450 222"/>
+            <path d="M 450 278 L 450 318"/>
+            <path d="M 450 374 L 450 414"/>
+            <path d="M 450 470 L 450 510"/>
+            <path d="M 450 566 L 450 606"/>
+            <path d="M 450 662 L 450 702"/>
+            <path d="M 450 758 L 450 800"/>
+          </g>
+          <g font-size="10.5" text-anchor="start" opacity="0.75">
+            <text x="461" y="110">BGR frame, H&#215;W&#215;3</text>
+            <text x="461" y="206">single channel</text>
+            <text x="461" y="302">corners[], ids[]</text>
+            <text x="461" y="398">mapped detections</text>
+            <text x="461" y="494">objectPoints, imagePoints</text>
+            <text x="461" y="590">rvec, tvec  (world &#8594; camera)</text>
+            <text x="461" y="686">x, y, z, yaw_deg, tilt_deg</text>
+            <text x="461" y="782">pose dict</text>
+          </g>
+
+          <g opacity="0.55">
+            <path d="M 600 346 L 700 346" stroke="currentColor" stroke-dasharray="4 3" fill="none" marker-end="url(#arrAm)"/>
+            <rect x="704" y="322" width="176" height="48" fill="none" stroke="currentColor" stroke-dasharray="4 3"/>
+            <text x="716" y="341" font-size="11">unmapped IDs</text>
+            <text x="716" y="358" font-size="10.5" opacity="0.8">drawn red, never solved</text>
+          </g>
+          <g opacity="0.55">
+            <path d="M 600 550 L 656 550 L 656 590" stroke="currentColor" stroke-dasharray="4 3" fill="none" marker-end="url(#arrAm)"/>
+            <text x="666" y="612" font-size="11">no calib.npz</text>
+            <text x="666" y="628" font-size="10.5" opacity="0.8">whole loop degrades</text>
+            <text x="666" y="643" font-size="10.5" opacity="0.8">to detection only</text>
+          </g>
+
+          <path d="M 94 800 L 806 800" stroke="currentColor" stroke-width="1.25" fill="none"/>
+          <g stroke="currentColor" stroke-width="1.25" marker-end="url(#arrA)" fill="none">
+            <path d="M 94 800 L 94 828"/><path d="M 272 800 L 272 828"/>
+            <path d="M 450 800 L 450 828"/><path d="M 628 800 L 628 828"/>
+            <path d="M 806 800 L 806 828"/>
+          </g>
+          <g stroke="currentColor" stroke-width="1.25" fill="none">
+            <rect x="15" y="830" width="158" height="58"/><rect x="193" y="830" width="158" height="58"/>
+            <rect x="371" y="830" width="158" height="58"/>
+            <rect x="549" y="830" width="158" height="58"/><rect x="727" y="830" width="158" height="58"/>
+          </g>
+          <g font-size="11.5" text-anchor="middle" font-weight="500">
+            <text x="94" y="856">camera window</text>
+            <text x="272" y="856">hall map window</text>
+            <text x="450" y="856">logs/track.csv</text>
+            <text x="628" y="856">UDP :5005</text>
+            <text x="806" y="856">two .mp4 writers</text>
+          </g>
+          <g font-size="10" text-anchor="middle" opacity="0.62">
+            <text x="94" y="872">outlines + text</text>
+            <text x="272" y="872">stage 08</text>
+            <text x="450" y="872">every frame, pose or not</text>
+            <text x="628" y="872">only when a pose exists</text>
+            <text x="806" y="872">map + camera, one stamp</text>
+          </g>
+        </g>
+      </svg>
+    </div>
+    <figcaption><b>The per-frame spine.</b> Config enters on the left at the stage that consumes it;
+    five sinks hang off the bottom. Two paths deliberately go nowhere &mdash; unmapped tag IDs are
+    drawn but never solved, and a missing <code>calib.npz</code> drops the loop back to
+    detection-only rather than substituting a guessed focal length.</figcaption>
+  </figure>
+</section>
+
+<section class="stage">
+  <p class="eyebrow"><span class="num">01</span> Frame source</p>
+  <h2>Three input kinds behind one <code>read()</code></h2>
+  <p>A webcam index, a video file or stream URL, and a folder of stills all have to work. The
+  recorded-clip path is not a convenience: replaying a file is the only way to get a repeatable
+  number out of a run, and the stills path is what the measurement scripts feed on.</p>
+  <p>On a live camera, autofocus and auto-exposure are switched off before anything else happens.
+  Autofocus hunting changes the principal distance mid-run, which changes apparent tag size, which
+  changes recovered range and position &mdash; it looks exactly like algorithm failure. Every property
+  is written and then <em>read back</em>, because most backends accept the write and ignore it.</p>
+  <dl class="io">
+    <dt>in</dt><dd>source spec &#8212; &quot;0&quot; | &quot;clip.mp4&quot; | &quot;photos/&quot;</dd>
+    <dt>out</dt><dd>frame: ndarray (H, W, 3) uint8 BGR, or None at exhaustion</dd>
+  </dl>
+  <div class="note"><b>First-frame guard.</b> If <code>calib.npz</code> carries an
+  <code>image_size</code>, frame 0 is checked against it and the run aborts on a mismatch. A phone&rsquo;s
+  stills and its video are different aspect ratios <em>and</em> different sensor crops, so a stills
+  calibration on a video stream produces a confident, wrong position with no visible symptom.</div>
+</section>
+
+<section class="stage">
+  <p class="eyebrow"><span class="num">02&ndash;03</span> Detection</p>
+  <h2>Greyscale in, corners and IDs out</h2>
+  <p>Detection runs on a single channel; the colour frame is kept only so the overlay can be drawn
+  on it. <code>DICT_4X4_50</code> is the smallest dictionary that covers nine tags, and small matters:
+  fewer bits per tag means physically larger, more robust bit cells at a given printed size, which is
+  what decides whether a tag at range resolves at all.</p>
+  <p>Sub-pixel corner refinement is on and it is not cosmetic. Corner localisation error propagates
+  roughly linearly into recovered position. At the real 12 m ceiling one pixel is about 3 mm on the
+  marker plane, so whole-pixel versus 0.1 px corners is the difference between a millimetre-level
+  and a sub-millimetre line in the error budget.</p>
+  <dl class="io">
+    <dt>in</dt><dd>gray: (H, W) uint8</dd>
+    <dt>out</dt><dd>corners: list of (1, 4, 2) float32 &#183; ids: (N, 1) int32 &#183; rejected</dd>
+  </dl>
+</section>
+
+<section class="stage">
+  <p class="eyebrow"><span class="num">04</span> Known / unknown split</p>
+  <h2>A tag with no surveyed position cannot contribute a correspondence</h2>
+  <p>Detected IDs are partitioned against the keys of <code>markers.json</code>. Unmapped tags are
+  kept in their own bucket rather than dropped, and drawn in red on the camera window, because a tag
+  that is physically on the ceiling but missing from the map is the single most common surveying
+  mistake &mdash; and silently discarding it would hide it.</p>
+  <dl class="io">
+    <dt>known</dt><dd>[(id, corners), ...] &#8212; feeds the solve</dd>
+    <dt>unknown</dt><dd>[(id, corners), ...] &#8212; overlay only, red</dd>
+  </dl>
+</section>
+
+<section class="stage">
+  <p class="eyebrow"><span class="num">05</span> Correspondence build</p>
+  <h2>The handedness trap, and where it is resolved</h2>
+  <p>Each detected marker contributes four 3D&#8211;2D pairs. The 3D side comes from the marker&rsquo;s
+  surveyed centre plus a corner offset; the 2D side is the refined image corner. The only question
+  is which offset pairs with which image corner &mdash; and that mapping is fixed by geometry, not by
+  taste.</p>
+  <p>ArUco returns corners clockwise <em>as printed on the tag</em>, so index 0 is a fixed physical
+  corner regardless of camera rotation. What is <em>not</em> fixed is which side of the marker plane
+  the camera sits on: viewed from below, the winding that appears clockwise in the image traverses
+  the world square the other way round. Get it wrong and X or Y comes out mirrored.</p>
+
+  <figure>
+    <div class="frame">
+      <svg viewBox="0 0 900 350" role="img" aria-label="Corner correspondence: ArUco image corners numbered clockwise, passed through corner_offsets with rotation and mirror parameters, producing world object points on the ceiling plane">
+        <defs>
+          <marker id="arrB" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+            <path d="M 0 0 L 10 5 L 0 10 z" fill="currentColor"/>
+          </marker>
+        </defs>
+        <g fill="currentColor" font-family="IBM Plex Mono, monospace">
+
+          <text x="20" y="26" font-size="11" letter-spacing="1.2" opacity="0.65">WHAT ARUCO RETURNS</text>
+          <rect x="20" y="40" width="250" height="290" fill="none" stroke="currentColor" opacity="0.28"/>
+          <rect x="85" y="130" width="120" height="120" fill="none" stroke="currentColor" stroke-width="1.5"/>
+          <g font-size="11.5" font-weight="500">
+            <circle cx="85" cy="130" r="4" fill="#C7620A"/><text x="66" y="123" fill="#C7620A">0</text>
+            <circle cx="205" cy="130" r="3.5"/><text x="212" y="123">1</text>
+            <circle cx="205" cy="250" r="3.5"/><text x="212" y="268">2</text>
+            <circle cx="85" cy="250" r="3.5"/><text x="68" y="268">3</text>
+          </g>
+          <path d="M 118 160 A 30 30 0 1 1 112 200" fill="none" stroke="currentColor" stroke-width="1.25" opacity="0.75" marker-end="url(#arrB)"/>
+          <text x="145" y="196" font-size="10.5" text-anchor="middle" opacity="0.75">clockwise</text>
+          <text x="145" y="209" font-size="10.5" text-anchor="middle" opacity="0.75">in the image</text>
+          <text x="145" y="300" font-size="10.5" text-anchor="middle" opacity="0.7">index 0 is a fixed</text>
+          <text x="145" y="314" font-size="10.5" text-anchor="middle" opacity="0.7">physical corner</text>
+
+          <path d="M 282 185 L 322 185" stroke="currentColor" stroke-width="1.25" fill="none" marker-end="url(#arrB)"/>
+
+          <text x="332" y="26" font-size="11" letter-spacing="1.2" opacity="0.65">CORNER_OFFSETS()</text>
+          <rect x="332" y="40" width="236" height="290" fill="none" stroke="currentColor" opacity="0.28"/>
+          <g font-size="11">
+            <text x="346" y="70" font-weight="500">base offsets, in order:</text>
+            <text x="346" y="90" opacity="0.85">(&#8722;s/2, &#8722;s/2)</text>
+            <text x="346" y="106" opacity="0.85">(+s/2, &#8722;s/2)</text>
+            <text x="346" y="122" opacity="0.85">(+s/2, +s/2)</text>
+            <text x="346" y="138" opacity="0.85">(&#8722;s/2, +s/2)</text>
+            <line x1="346" y1="154" x2="554" y2="154" stroke="currentColor" opacity="0.25"/>
+            <text x="346" y="176" font-weight="500">mirror</text><text x="412" y="176" opacity="0.8">negate x</text>
+            <text x="412" y="191" opacity="0.65" font-size="10.5">winding reverses</text>
+            <text x="346" y="214" font-weight="500">rotation</text><text x="412" y="214" opacity="0.8">shift by k&#183;90&#176;</text>
+            <text x="412" y="229" opacity="0.65" font-size="10.5">tag mounted turned</text>
+            <line x1="346" y1="245" x2="554" y2="245" stroke="currentColor" opacity="0.25"/>
+            <text x="346" y="268" font-size="10.5" opacity="0.8">8 combinations. eval_photos.py</text>
+            <text x="346" y="283" font-size="10.5" opacity="0.8">solves all 8 on multi-marker</text>
+            <text x="346" y="298" font-size="10.5" opacity="0.8">photos, keeps the lowest residual.</text>
+            <text x="346" y="318" font-size="11" fill="#C7620A" font-weight="600">this rig: [0, 0]</text>
+          </g>
+
+          <path d="M 580 185 L 620 185" stroke="currentColor" stroke-width="1.25" fill="none" marker-end="url(#arrB)"/>
+
+          <text x="630" y="26" font-size="11" letter-spacing="1.2" opacity="0.65">WORLD OBJECT POINTS</text>
+          <rect x="630" y="40" width="250" height="290" fill="none" stroke="currentColor" opacity="0.28"/>
+          <line x1="650" y1="112" x2="866" y2="112" stroke="currentColor" stroke-dasharray="3 3" opacity="0.4"/>
+          <text x="866" y="104" font-size="10" text-anchor="end" opacity="0.6">Z = ceiling_height_m</text>
+          <rect x="695" y="130" width="120" height="120" fill="none" stroke="currentColor" stroke-width="1.5"/>
+          <g font-size="11.5" font-weight="500">
+            <circle cx="695" cy="130" r="4" fill="#C7620A"/>
+            <circle cx="815" cy="130" r="3.5"/><circle cx="815" cy="250" r="3.5"/><circle cx="695" cy="250" r="3.5"/>
+          </g>
+          <g font-size="10" opacity="0.85">
+            <text x="691" y="123" text-anchor="end" fill="#C7620A">0 (&#8722;,&#8722;)</text>
+            <text x="822" y="123">1 (+,&#8722;)</text>
+            <text x="822" y="266">2 (+,+)</text>
+            <text x="691" y="266" text-anchor="end">3 (&#8722;,+)</text>
+          </g>
+          <g stroke="currentColor" opacity="0.6" fill="none" marker-end="url(#arrB)">
+            <path d="M 660 275 L 700 275"/><path d="M 660 275 L 660 305"/>
+          </g>
+          <g font-size="10" opacity="0.7">
+            <text x="705" y="279">+X</text><text x="652" y="318">+Y</text>
+          </g>
+          <text x="755" y="300" font-size="10.5" text-anchor="middle" opacity="0.7">+Y drawn downward,</text>
+          <text x="755" y="313" font-size="10.5" text-anchor="middle" opacity="0.7">as the map draws it</text>
+        </g>
+      </svg>
+    </div>
+    <figcaption><b>One correspondence, three frames.</b> The centre panel is the only place the
+    convention lives &mdash; deliberately not in the marker map, because mirroring the map would fix the
+    geometry while silently relabelling which end of the hall is y&nbsp;=&nbsp;0. A wrong convention
+    does not fail quietly; it fails with a large reprojection error, which is what the 8-way search
+    ranks on.</figcaption>
+  </figure>
+
+  <p>A refined map (from <code>tools/refine_map.py</code>) may give a tag its own solved height and
+  in-plane yaw, since printed sheets taped up by hand are neither exactly coplanar nor exactly
+  square. Both are applied here rather than assumed away.</p>
+  <dl class="io">
+    <dt>out</dt><dd>objectPoints: (4N, 3) float64 &#183; imagePoints: (4N, 2) float64 &#183; used_ids</dd>
+  </dl>
+</section>
+
+<section class="stage">
+  <p class="eyebrow"><span class="num">06</span> Inside solvePnP</p>
+  <h2>One fused solve, chosen from three branches</h2>
+  <p>All visible markers&rsquo; corners go into a single <code>solvePnP</code> call. Solving each marker
+  separately and averaging would throw away exactly what makes the multi-marker case well
+  conditioned: the markers&rsquo; positions <em>relative to each other</em> are known, so their combined
+  outline constrains camera orientation far more tightly than any one tag&rsquo;s four corners can.</p>
+
+  <figure>
+    <div class="frame">
+      <svg viewBox="0 0 900 470" role="img" aria-label="Solver branch selection: if the mount is assumed level use the four degree of freedom closed-form solve, otherwise if only one marker is visible use IPPE_SQUARE in the marker local frame, otherwise use the iterative fused solve over all markers">
+        <defs>
+          <marker id="arrC" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+            <path d="M 0 0 L 10 5 L 0 10 z" fill="currentColor"/>
+          </marker>
+        </defs>
+        <g fill="currentColor" font-family="IBM Plex Mono, monospace">
+
+          <rect x="20" y="20" width="200" height="56" fill="none" stroke="currentColor" stroke-width="1.25"/>
+          <text x="120" y="44" font-size="11.5" text-anchor="middle" font-weight="500">4N correspondences</text>
+          <text x="120" y="61" font-size="10.5" text-anchor="middle" opacity="0.7">+ K, dist_coeffs</text>
+
+          <path d="M 120 76 L 120 106" stroke="currentColor" stroke-width="1.25" fill="none" marker-end="url(#arrC)"/>
+          <polygon points="120,108 215,150 120,192 25,150" fill="none" stroke="currentColor" stroke-width="1.25"/>
+          <text x="120" y="147" font-size="11" text-anchor="middle">pose.</text>
+          <text x="120" y="161" font-size="11" text-anchor="middle">assume_level?</text>
+
+          <path d="M 120 192 L 120 246" stroke="currentColor" stroke-width="1.25" fill="none" marker-end="url(#arrC)"/>
+          <text x="130" y="222" font-size="10.5" opacity="0.7">no</text>
+          <polygon points="120,248 215,290 120,332 25,290" fill="none" stroke="currentColor" stroke-width="1.25"/>
+          <text x="120" y="287" font-size="11" text-anchor="middle">n_markers</text>
+          <text x="120" y="301" font-size="11" text-anchor="middle">== 1?</text>
+
+          <path d="M 215 150 L 428 150" stroke="currentColor" stroke-width="1.25" fill="none" marker-end="url(#arrC)"/>
+          <text x="240" y="142" font-size="10.5" opacity="0.7">yes</text>
+          <path d="M 215 290 L 428 290" stroke="currentColor" stroke-width="1.25" fill="none" marker-end="url(#arrC)"/>
+          <text x="240" y="282" font-size="10.5" opacity="0.7">yes</text>
+          <path d="M 120 332 L 120 400 L 428 400" stroke="currentColor" stroke-width="1.25" fill="none" marker-end="url(#arrC)"/>
+          <text x="130" y="372" font-size="10.5" opacity="0.7">no</text>
+
+          <rect x="430" y="112" width="450" height="76" fill="none" stroke="currentColor" stroke-width="1.25"/>
+          <text x="446" y="136" font-size="12" font-weight="600">solve_level()  &#8212;  4 DOF, closed form</text>
+          <text x="446" y="155" font-size="10.5" opacity="0.75">world&#8594;image collapses to a similarity; lstsq in one shot</text>
+          <text x="446" y="172" font-size="10.5" opacity="0.75">reproj_px becomes a tilt detector, not just a fit statistic</text>
+
+          <rect x="430" y="252" width="450" height="76" fill="none" stroke="#CC5548" stroke-width="1.5"/>
+          <text x="446" y="276" font-size="12" font-weight="600" fill="#CC5548">solve_single()  &#8212;  SOLVEPNP_IPPE_SQUARE</text>
+          <text x="446" y="295" font-size="10.5" opacity="0.75">solved in the marker&#8217;s local frame, then composed with its</text>
+          <text x="446" y="312" font-size="10.5" opacity="0.75">world pose. Flagged low quality: rotation-ambiguous at range.</text>
+
+          <rect x="430" y="362" width="450" height="76" fill="none" stroke="#C7620A" stroke-width="2.25"/>
+          <text x="446" y="386" font-size="12" font-weight="600" fill="#C7620A">solve_multi()  &#8212;  SOLVEPNP_ITERATIVE</text>
+          <text x="446" y="405" font-size="10.5" opacity="0.75">coplanar points &#8594; homography init, then Levenberg&#8211;Marquardt</text>
+          <text x="446" y="422" font-size="10.5" opacity="0.75">the shared plane is where the conditioning is bought</text>
+        </g>
+      </svg>
+    </div>
+    <figcaption><b>Branch selection, in the order the code tests it.</b> The default path is the
+    bottom one. The single-marker fallback is marked because it is the one branch whose output is
+    flagged as low quality in the emitted pose, and the level branch is only honest while the mount
+    mechanically holds the optical axis normal to the marker plane.</figcaption>
+  </figure>
+
+  <h3>What actually crosses the call boundary</h3>
+  <div class="tablewrap">
+    <table>
+      <thead><tr><th>Argument</th><th class="m">Shape / dtype</th><th>Contents</th></tr></thead>
+      <tbody>
+        <tr><td class="m">objectPoints</td><td class="m">(4N, 3) float64</td><td>World metres. Marker centre from <code>markers.json</code>, plus the rotated corner offset, at the tag&rsquo;s plane height.</td></tr>
+        <tr><td class="m">imagePoints</td><td class="m">(4N, 2) float64</td><td>Sub-pixel refined image corners, in the same row order as above. The pairing is the whole game.</td></tr>
+        <tr><td class="m">cameraMatrix</td><td class="m">(3, 3) float64</td><td><code>fx, fy, cx, cy</code> from <code>calib.npz</code>. Must belong to the exact sensor readout being solved.</td></tr>
+        <tr><td class="m">distCoeffs</td><td class="m">(5,) float64</td><td>Radial and tangential terms. The one part of the imaging model that is not projective.</td></tr>
+        <tr><td class="m">flags</td><td class="m">int</td><td><code>SOLVEPNP_ITERATIVE</code> fused, <code>SOLVEPNP_IPPE_SQUARE</code> single.</td></tr>
+        <tr><td class="m">&#8594; rvec</td><td class="m">(3, 1) float64</td><td>Rodrigues rotation, <b>world &#8594; camera</b>.</td></tr>
+        <tr><td class="m">&#8594; tvec</td><td class="m">(3, 1) float64</td><td>Translation, <b>world &#8594; camera</b>. Not the camera position.</td></tr>
+      </tbody>
+    </table>
+  </div>
+  <div class="note"><b>Why <code>ITERATIVE</code> and not a planar-specific flag.</b> For a coplanar
+  point set OpenCV initialises <code>ITERATIVE</code> from a homography &mdash; the closed-form planar
+  solution &mdash; then refines by Levenberg&ndash;Marquardt. It is already a planar solver in one call, so
+  the known common plane is exploited rather than merely tolerated.</div>
+</section>
+
+<section class="stage">
+  <p class="eyebrow"><span class="num">07</span> Inversion and heading</p>
+  <h2><code>solvePnP</code> tells you where the world is. You want where the camera is.</h2>
+  <p><code>rvec</code> and <code>tvec</code> map world into the camera frame. The camera&rsquo;s own position
+  is the origin of the camera frame expressed in world coordinates, which is the inverse transform
+  applied to zero: <code>C = &minus;R&#7488;&nbsp;t</code>. <code>C[0]</code> and <code>C[1]</code>
+  are the reported X and Y; <code>C[2]</code> is logged too, because the marker map pins the plane at
+  a known Z, so solved camera Z is a free readout of range error &mdash; and a range off by a fixed
+  fraction means the focal length is off by that same fraction, which scales X and Y with it.</p>
+
+  <figure>
+    <div class="frame">
+      <svg viewBox="0 0 860 440" role="img" aria-label="Side elevation of the rig: markers on the ceiling plane at known Z, camera below looking up, showing the camera position vector from the world origin, the range to the plane, and the tilt angle between the optical axis and the plane normal">
+        <defs>
+          <marker id="arrD" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+            <path d="M 0 0 L 10 5 L 0 10 z" fill="currentColor"/>
+          </marker>
+          <marker id="arrDo" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+            <path d="M 0 0 L 10 5 L 0 10 z" fill="#C7620A"/>
+          </marker>
+        </defs>
+        <g fill="currentColor" font-family="IBM Plex Mono, monospace">
+
+          <line x1="90" y1="90" x2="800" y2="90" stroke="currentColor" stroke-width="1.5"/>
+          <g stroke="currentColor" opacity="0.35">
+            <path d="M 100 90 L 110 78 M 130 90 L 140 78 M 160 90 L 170 78 M 190 90 L 200 78 M 220 90 L 230 78 M 250 90 L 260 78 M 280 90 L 290 78 M 310 90 L 320 78 M 340 90 L 350 78 M 370 90 L 380 78 M 400 90 L 410 78 M 430 90 L 440 78 M 460 90 L 470 78 M 490 90 L 500 78 M 520 90 L 530 78 M 550 90 L 560 78 M 580 90 L 590 78 M 610 90 L 620 78 M 640 90 L 650 78 M 670 90 L 680 78 M 700 90 L 710 78 M 730 90 L 740 78 M 760 90 L 770 78 M 790 90 L 800 78"/>
+          </g>
+          <text x="800" y="70" font-size="11" text-anchor="end" opacity="0.75">marker plane &#183; Z = 2.400 m</text>
+          <g fill="#2C7A4D">
+            <rect x="185" y="90" width="34" height="7"/><rect x="325" y="90" width="34" height="7"/>
+            <rect x="465" y="90" width="34" height="7"/><rect x="605" y="90" width="34" height="7"/>
+          </g>
+
+          <line x1="90" y1="330" x2="800" y2="330" stroke="currentColor" stroke-dasharray="4 4" opacity="0.4"/>
+          <text x="800" y="348" font-size="11" text-anchor="end" opacity="0.6">Z = 0 &#183; survey datum</text>
+
+          <circle cx="140" cy="330" r="4" fill="currentColor"/>
+          <text x="126" y="352" font-size="10.5" text-anchor="end" opacity="0.75">world origin</text>
+          <g stroke="currentColor" stroke-width="1.25" fill="none" marker-end="url(#arrD)">
+            <path d="M 140 330 L 214 330"/><path d="M 140 330 L 140 262"/>
+          </g>
+          <text x="220" y="334" font-size="11">+X</text>
+          <text x="132" y="256" font-size="11" text-anchor="end">+Z</text>
+
+          <g transform="translate(470 300) rotate(-9)">
+            <rect x="-24" y="-13" width="48" height="26" fill="none" stroke="currentColor" stroke-width="1.5"/>
+            <polygon points="-24,-13 -40,-34 40,-34 24,-13" fill="none" stroke="currentColor" stroke-width="1.25" opacity="0.7"/>
+          </g>
+          <circle cx="470" cy="300" r="3.5" fill="#C7620A"/>
+          <text x="470" y="332" font-size="11" text-anchor="middle" fill="#C7620A" font-weight="600">C</text>
+
+          <g stroke="currentColor" opacity="0.35" stroke-dasharray="3 4" fill="none">
+            <path d="M 470 300 L 336 92"/><path d="M 470 300 L 646 92"/>
+          </g>
+          <text x="491" y="126" font-size="10" opacity="0.55">field of view</text>
+
+          <line x1="470" y1="300" x2="470" y2="140" stroke="currentColor" stroke-dasharray="4 3" opacity="0.6"/>
+          <text x="462" y="150" font-size="10" text-anchor="end" opacity="0.65">plane normal</text>
+          <line x1="470" y1="300" x2="495" y2="142" stroke="#CC5548" stroke-width="1.5"/>
+          <text x="503" y="150" font-size="10" fill="#CC5548">optical axis</text>
+          <path d="M 470 200 A 100 100 0 0 1 486 202" fill="none" stroke="#CC5548" stroke-width="1.5"/>
+          <text x="530" y="212" font-size="10.5" fill="#CC5548">tilt_deg = acos |R&#8322;&#8322;|</text>
+
+          <path d="M 140 330 L 464 302" stroke="#C7620A" stroke-width="2" fill="none" marker-end="url(#arrDo)"/>
+          <text x="250" y="308" font-size="11.5" fill="#C7620A" font-weight="600">C = &#8722;R&#7488; &#183; t</text>
+          <text x="250" y="323" font-size="10" fill="#C7620A" opacity="0.85">camera position in world metres</text>
+
+          <g stroke="currentColor" opacity="0.55" fill="none" marker-end="url(#arrD)" marker-start="url(#arrD)">
+            <path d="M 720 97 L 720 293"/>
+          </g>
+          <text x="732" y="188" font-size="10.5" opacity="0.75">range_m</text>
+          <text x="732" y="202" font-size="10" opacity="0.6">|2.400 &#8722; C&#7826;|</text>
+
+          <rect x="20" y="378" width="820" height="46" fill="none" stroke="currentColor" opacity="0.28"/>
+          <text x="36" y="398" font-size="10.5" opacity="0.8">yaw_deg &#8212; heading of the camera&#8217;s image-up axis, R&#7488;&#183;(0,&#8722;1,0), projected into the marker plane. The optical</text>
+          <text x="36" y="414" font-size="10.5" opacity="0.8">axis points at the ceiling and projects to nothing, so it cannot serve as a heading; image-up is what a vehicle calls forward.</text>
+        </g>
+      </svg>
+    </div>
+    <figcaption><b>Why tilt is reported per frame rather than assumed.</b> Tilt is the angle between
+    the optical axis and the plane normal, read straight off <code>R[2][2]</code>. At 12 m, one degree
+    of it is roughly 21 cm of lateral error &mdash; and no reprojection residual will reveal it, because a
+    tilted camera reprojects its own wrong pose perfectly.</figcaption>
+  </figure>
+</section>
+
+<section class="stage">
+  <p class="eyebrow"><span class="num">08</span> Quality</p>
+  <h2>An accuracy number derived, not asserted</h2>
+  <p>Ground sampling distance is how many metres on the marker plane one pixel covers:
+  <code>range / focal_px</code>. Multiplying by the mean reprojection error converts the residual the
+  solver actually saw into a distance. Dividing by <code>&radic;n</code> reflects that independent
+  corner noise averages down across markers.</p>
+  <pre>acc_est_m = (range_m / focal_px) &times; reproj_px / &radic;n_markers
+            &#8985;              &#8985;            &#8985;
+       metres per pixel   what the solver   independent
+       at solved range    could not fit     corner noise</pre>
+  <p>The range used is the <em>solved</em> camera-to-plane distance rather than the nominal ceiling
+  height, because that is the distance the pixels were actually projected over.</p>
+  <div class="note"><b>What this number deliberately excludes.</b> Marker placement survey error
+  (&plusmn;8 mm here) and camera tilt. Both belong in the report&rsquo;s error budget as their own rows.
+  Survey error is a property of how the tags were measured, never of the algorithm; folding it in
+  would make a badly surveyed rig look like a badly performing solver.</div>
+</section>
+
+<section class="stage">
+  <p class="eyebrow">Visualization</p>
+  <h2>How the 2D hall map is built, and what feeds every mark on it</h2>
+  <p>The map is a second named OpenCV window drawn with primitives &mdash; no matplotlib, no render
+  thread. It earns its place because it makes a wrong pose obvious at a glance: a mirrored X, a tag
+  mapped to the wrong grid cell, a jump the instant a marker leaves view. None of those are visible
+  in a scrolling column of numbers.</p>
+
+  <h3>The extent is derived, never configured</h3>
+  <p>Bounds come from the min and max of the marker positions themselves. A hand-entered hall
+  rectangle would be a second copy of the same fact, free to drift out of agreement with the first.
+  The view is then widened by the current <em>trail</em>, not by every pose ever seen &mdash; so a single
+  ill-conditioned single-marker frame that lands metres away zooms the map out only until it ages
+  past the trail length, then the scale recovers on its own.</p>
+
+  <figure>
+    <div class="frame">
+      <svg viewBox="0 0 900 600" role="img" aria-label="Annotated replica of the hall map window, with callouts identifying the data source behind the header text, the surveyed bounds rectangle, known and detected marker squares, the pose dot, the heading line and the position trail">
+        <defs>
+          <marker id="arrE" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+            <path d="M 0 0 L 10 5 L 0 10 z" fill="currentColor"/>
+          </marker>
+        </defs>
+
+        <rect x="170" y="30" width="430" height="520" fill="#1C1C1C"/>
+
+        <g font-family="IBM Plex Mono, monospace" font-size="11.5" fill="#F0F0F0">
+          <text x="182" y="56">frame 412   fps  29.7</text>
+          <text x="182" y="78">x +0.912  y +0.744  yaw  +91.3</text>
+          <text x="182" y="100">markers 4: [4, 5, 7, 8]</text>
+          <text x="182" y="122">accuracy estimate ~3.8 mm</text>
+        </g>
+        <line x1="170" y1="140" x2="600" y2="140" stroke="#5A5A5A"/>
+
+        <rect x="200" y="165" width="367" height="349" fill="none" stroke="#5A5A5A"/>
+
+        <g stroke="#00C000" fill="none">
+          <rect x="185" y="150" width="30" height="30"/>
+          <rect x="191" y="325" width="30" height="30"/>
+          <rect x="368" y="499" width="30" height="30"/>
+          <rect x="552" y="499" width="30" height="30"/>
+          <rect x="185" y="499" width="30" height="30"/>
+        </g>
+        <g fill="#00E5E5">
+          <rect x="368" y="325" width="30" height="30"/>
+          <rect x="552" y="325" width="30" height="30"/>
+          <rect x="375" y="150" width="30" height="30"/>
+          <rect x="552" y="150" width="30" height="30"/>
+        </g>
+        <g font-family="IBM Plex Mono, monospace" font-size="9.5">
+          <text x="218" y="150" fill="#00C000">6</text><text x="408" y="150" fill="#00E5E5">7</text><text x="585" y="150" fill="#00E5E5">8</text>
+          <text x="224" y="325" fill="#00C000">2</text><text x="401" y="325" fill="#00E5E5">4</text><text x="585" y="325" fill="#00E5E5">5</text>
+          <text x="218" y="499" fill="#00C000">0</text><text x="401" y="499" fill="#00C000">1</text><text x="585" y="499" fill="#00C000">3</text>
+        </g>
+
+        <polyline points="250,470 272,452 298,440 322,428 344,420 361,404 372,392 383,378 391,366 398,352 404,340" fill="none" stroke="#5A6E96" stroke-width="1.5"/>
+        <circle cx="404" cy="340" r="5.5" fill="#FF8C00"/>
+        <line x1="404" y1="340" x2="404" y2="314" stroke="#FF8C00" stroke-width="2.5"/>
+
+        <g fill="currentColor" font-family="IBM Plex Mono, monospace" font-size="10.5">
+          <g stroke="currentColor" fill="none" opacity="0.55" marker-end="url(#arrE)">
+            <path d="M 160 78 L 128 78"/>
+            <path d="M 160 300 L 128 300"/>
+            <path d="M 160 440 L 128 440"/>
+            <path d="M 610 96 L 646 96"/>
+            <path d="M 610 200 L 646 200"/>
+            <path d="M 610 340 L 646 340"/>
+            <path d="M 610 470 L 646 470"/>
+          </g>
+
+          <text x="122" y="60" text-anchor="end" font-weight="600">header band</text>
+          <text x="122" y="75" text-anchor="end" opacity="0.75">4 lines &#215; line height,</text>
+          <text x="122" y="90" text-anchor="end" opacity="0.75">reserved so text never</text>
+          <text x="122" y="105" text-anchor="end" opacity="0.75">covers a tag</text>
+
+          <text x="122" y="284" text-anchor="end" font-weight="600">bounds rectangle</text>
+          <text x="122" y="299" text-anchor="end" opacity="0.75">min/max of markers.json</text>
+          <text x="122" y="314" text-anchor="end" opacity="0.75">not a configured hall size</text>
+
+          <text x="122" y="424" text-anchor="end" font-weight="600">one scale, both axes</text>
+          <text x="122" y="439" text-anchor="end" opacity="0.75">a metre is the same length</text>
+          <text x="122" y="454" text-anchor="end" opacity="0.75">across and down; refit</text>
+          <text x="122" y="469" text-anchor="end" opacity="0.75">every frame</text>
+
+          <text x="652" y="82" font-weight="600">status text</text>
+          <text x="652" y="97" opacity="0.75">frame, fps, pose x/y/yaw,</text>
+          <text x="652" y="112" opacity="0.75">n_markers, ids, acc_est_m</text>
+          <text x="652" y="127" opacity="0.75">reproj_px stays in the CSV</text>
+
+          <text x="652" y="186" font-weight="600">marker squares</text>
+          <text x="652" y="201" opacity="0.75">drawn at true physical size,</text>
+          <text x="652" y="216" opacity="0.75">so the picture carries the</text>
+          <text x="652" y="231" opacity="0.75">same scale as the geometry</text>
+          <text x="652" y="252"><tspan fill="#00E5E5">&#9632;</tspan> filled = detected now</text>
+          <text x="652" y="268"><tspan fill="#00C000">&#9633;</tspan> outline = mapped, unseen</text>
+
+          <text x="652" y="326" font-weight="600">pose dot + heading</text>
+          <text x="652" y="341" opacity="0.75">pose[x], pose[y] through</text>
+          <text x="652" y="356" opacity="0.75">to_px(); heading is a fixed</text>
+          <text x="652" y="371" opacity="0.75">26 px, direction only &#8212; a</text>
+          <text x="652" y="386" opacity="0.75">metric length would vanish</text>
+          <text x="652" y="401" opacity="0.75">on one rig and swamp another</text>
+
+          <text x="652" y="456" font-weight="600">trail</text>
+          <text x="652" y="471" opacity="0.75">deque(maxlen=100) of (x, y),</text>
+          <text x="652" y="486" opacity="0.75">unsmoothed &#8212; every wobble</text>
+          <text x="652" y="501" opacity="0.75">in it is real noise, and</text>
+          <text x="652" y="516" opacity="0.75">v1 keeps it visible</text>
+
+          <text x="180" y="574" font-size="10.5" opacity="0.7">+Y draws DOWNWARD (viz.map_y_down): the solver needs a right-handed frame, so on a ceiling rig the surveyed &#8220;up&#8221; is negative Y.</text>
+        </g>
+      </svg>
+    </div>
+    <figcaption><b>The map window, annotated with its data sources.</b> Drawn here at the real
+    proportions of the 9-tag rig: 1.790 m across, 1.704 m deep, 0.1435 m tags. Four markers are
+    detected in this frame, which is why the pose carries a ~3.8 mm accuracy estimate rather than the
+    single-marker warning.</figcaption>
+  </figure>
+
+  <h3>Every mark, and the field behind it</h3>
+  <div class="tablewrap">
+    <table>
+      <thead><tr><th>Drawn element</th><th class="m">Data in</th><th>Recomputed</th></tr></thead>
+      <tbody>
+        <tr><td><span class="swatch" style="background:#5A5A5A"></span>Bounds rectangle</td><td class="m">min/max of markers.json</td><td>once, at construction</td></tr>
+        <tr><td><span class="swatch" style="background:#00C000"></span>Mapped marker, unseen</td><td class="m">markers[id] &#8594; (x, y), tag_size_m</td><td>every frame</td></tr>
+        <tr><td><span class="swatch" style="background:#00E5E5"></span>Detected marker, filled</td><td class="m">known IDs this frame</td><td>every frame</td></tr>
+        <tr><td><span class="swatch" style="background:#FF8C00"></span>Pose dot</td><td class="m">pose[&quot;x&quot;], pose[&quot;y&quot;]</td><td>every frame with a pose</td></tr>
+        <tr><td><span class="swatch" style="background:#FF8C00"></span>Heading line</td><td class="m">pose[&quot;yaw_deg&quot;]</td><td>every frame with a pose</td></tr>
+        <tr><td><span class="swatch" style="background:#5A6E96"></span>Trail polyline</td><td class="m">last 100 (x, y) appended</td><td>every frame with a pose</td></tr>
+        <tr><td>Status line 1</td><td class="m">frame_index, FpsMeter.value()</td><td>every frame</td></tr>
+        <tr><td>Status line 2</td><td class="m">x, y, yaw_deg</td><td>every frame</td></tr>
+        <tr><td>Status line 3</td><td class="m">n_markers, ids</td><td>every frame</td></tr>
+        <tr><td>Status line 4</td><td class="m">acc_est_m, single_marker</td><td>every frame</td></tr>
+        <tr><td>Canvas scale &amp; origin</td><td class="m">bounds &#8746; trail, margin 0.12</td><td>every frame</td></tr>
+      </tbody>
+    </table>
+  </div>
+  <div class="note"><b><code>reproj_px</code> is on the map&rsquo;s absent list on purpose.</b> It is a fit
+  statistic, not an accuracy &mdash; on this rig it mostly reports how well the marker survey is known.
+  It stays in <code>logs/track.csv</code>, where the report needs it, and off the display, where it
+  invites being read as a position error.</div>
+</section>
+
+<section class="stage">
+  <p class="eyebrow">Outputs</p>
+  <h2>One CSV row per frame, one datagram per fix</h2>
+  <p>The CSV logs frames with <em>no</em> pose as blank rows rather than skipping them: the fraction
+  of frames that yielded a fix is itself a result, and it cannot be recovered from a file that only
+  kept the successes. It is opened for append, because overwriting would silently destroy the run
+  the report is being written from.</p>
+  <pre>t, frame, x_m, y_m, <span class="k">z_m</span>, yaw_deg, tilt_deg, n_markers,
+ids, reproj_px, acc_est_m, single_marker, level_assumed</pre>
+  <p><code>z_m</code> is logged alongside X and Y as the free scale check: the map pins the plane at a
+  known Z, so solved camera Z reads out range error directly.</p>
+
+  <h3>UDP, one datagram per fix</h3>
+  <p>Fire-and-forget to <code>127.0.0.1:5005</code>. A consumer that stalls or dies must not slow the
+  capture loop or block a frame; a dropped datagram costs one pose and the next is along in ~30 ms.
+  The payload stays flat so a ROS 2 bridge node is a field-by-field copy.</p>
+  <pre>{<span class="k">"t"</span>: <span class="v">1723459200.12</span>, <span class="k">"x"</span>: <span class="v">0.912</span>, <span class="k">"y"</span>: <span class="v">0.744</span>, <span class="k">"yaw_deg"</span>: <span class="v">91.3</span>,
+ <span class="k">"markers"</span>: <span class="v">[4, 5, 7, 8]</span>, <span class="k">"reproj_px"</span>: <span class="v">0.38</span>, <span class="k">"acc_est_m"</span>: <span class="v">0.0038</span>}</pre>
+  <p>The log is written <em>before</em> the send, so a publish that raises never costs the row.</p>
+  <div class="note"><b>Scaled demonstrator.</b> The rig is a 2.400 m ceiling with 0.1435 m tags,
+  chosen to hold angular size roughly constant against the real case &mdash; a 15 cm tag at 2.5 m subtends
+  about the same angle as a 72 cm tag at 12 m. Moving to the hall changes those two config numbers.
+  No code path differs.</div>
+</section>
+
+<footer>
+  <div>Star Navigation v1 &#183; starnav.py &#183; per-frame pipeline reference</div>
+  <div>Figures describe the code as built: detection, fused solve, inversion, map, CSV, UDP.</div>
+</footer>
+
+</div>

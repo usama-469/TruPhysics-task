@@ -199,7 +199,7 @@ def parse_args(argv=None):
                         help="folder of stills to evaluate; must NOT be the calibration set")
     parser.add_argument("--calib", type=Path, default=Path("calib.npz"),
                         help="intrinsics from calibrate.py")
-    parser.add_argument("--markers", type=Path, default=Path("config/markers_screen.json"),
+    parser.add_argument("--markers", type=Path, default=None,
                         help="marker map the photos show")
     parser.add_argument("--hall", type=Path, default=Path("config/hall.json"),
                         help="source of the dictionary and detector settings")
@@ -218,7 +218,8 @@ def parse_args(argv=None):
 def main(argv=None) -> int:
     args = parse_args(argv)
     hall = starnav.load_json(args.hall)
-    marker_map = starnav.load_marker_map(args.markers)
+    markers_path = args.markers or Path(hall.get("markers", "config/markers.json"))
+    marker_map = starnav.load_marker_map(markers_path)
     camera_matrix, dist_coeffs, image_size = starnav.load_calibration(args.calib)
 
     detection_cfg = dict(hall["detection"])
