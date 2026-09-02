@@ -1117,6 +1117,7 @@ def main(argv=None) -> int:
               f"{'yaw':>7}{'tilt':>7}{'n':>3}{'reproj':>8}{'acc_mm':>8}")
 
     frame = None
+    clean = None
     frame_index = 0
     paused = False
     try:
@@ -1150,6 +1151,12 @@ def main(argv=None) -> int:
                 gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
                 corners, ids, _rejected = detector.detectMarkers(gray)
                 known, unknown = split_known_unknown(corners, ids, known_ids)
+
+                # Held before anything is drawn on the frame. The overlay marks the
+                # marker outlines, which is precisely where a calibration re-detect
+                # looks for corners - so a snapshot of the annotated frame is not a
+                # photograph of the scene, it is a photograph of our own drawing.
+                clean = frame.copy()
 
                 overlay_scale = annotation_scale(frame)
                 draw_detections(frame, known, viz_cfg["known_color_bgr"], overlay_scale)
@@ -1230,9 +1237,9 @@ def main(argv=None) -> int:
                 break
             if key == KEY_PAUSE:
                 paused = not paused
-            elif key == KEY_SNAPSHOT and frame is not None:
+            elif key == KEY_SNAPSHOT and clean is not None:
                 path = snapshot_dir / f"frame_{frame_index:06d}.png"
-                cv2.imwrite(str(path), frame)
+                cv2.imwrite(str(path), clean)
                 print(f"saved {path}")
     finally:
         for writer, written in ((viz_writer, viz_path), (cam_writer, cam_path)):

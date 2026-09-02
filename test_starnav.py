@@ -194,9 +194,11 @@ def test_face_on_is_degenerate_but_flagged():
 
     assert tilted["reproj_px"] < 1e-3, tilted["reproj_px"]
     assert face_on["reproj_px"] > 1.0, face_on["reproj_px"]
-    # X and Y still land correctly; it is Z whose sign flips, which is exactly
-    # why the stage-2 check reads Z and not just X/Y.
-    assert abs(face_on["x"] - centre_x) < 1e-6
+    # Z's sign flips, which is what the stage-2 check reads. X is deliberately
+    # NOT asserted: with the two candidates coincident, which one comes back is
+    # decided by floating-point tie-breaking, and the wrong pose's X lands exactly
+    # right on OpenCV 4 but ~4 mm out on 5. Neither is a property worth pinning.
+    # The guarantee is the reproj_px above: the frame is unbelievable either way.
     assert face_on["z"] > 0 > tilted["z"]
 
 
